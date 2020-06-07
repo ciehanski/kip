@@ -1,0 +1,20 @@
+[package]
+name = "kip"
+version = "0.1.0"
+authors = ["Ryan Ciehanski <ryan@ciehanski.com>"]
+edition = "2018"
+
+[dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+walkdir = "2.3.1"
+dialoguer = "0.6.2"
+structopt = "0.3.14"
+serde = { version = "1.0.101", features = ["derive"] }
+serde_json = "1.0.53"
+uuid = { version = "0.8", features = ["serde", "v4"] }
+rand = "0.7.3"
+aead = "0.2.0"
+chacha20poly1305 = "0.4.1"
+sha3 = "0.8.2"
+rust-s3 = "0.22.5"
+# directories = "2.0.2"
