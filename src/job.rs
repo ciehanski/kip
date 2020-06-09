@@ -1,13 +1,15 @@
 use crate::crypto::encrypt;
 use chrono::prelude::*;
+use colored::*;
 use s3::bucket::Bucket;
 use s3::creds::Credentials;
 use s3::region::Region;
 use serde::{Deserialize, Serialize};
-use std::env;
 use std::error::Error;
+use std::fs;
 use std::fs::{metadata, read};
 use std::path::Path;
+use std::path::PathBuf;
 use uuid::Uuid;
 use walkdir::WalkDir;
 
@@ -23,6 +25,7 @@ pub struct Job {
     pub total_runs: usize,
     pub running: bool,
     // pub last_status: enum { OK, IN_PROGRESS, FAILED, NEVER_RUN }
+    // pub errors: Vec<KipError> - all reported errors in job's existence
 }
 
 impl Job {
@@ -41,20 +44,17 @@ impl Job {
     }
 
     pub fn upload(
-        &mut self,
+        mut self,
         secret: &str,
         aws_access: &str,
         aws_secret: &str,
     ) -> Result<(), Box<dyn Error>> {
         // Connect to S3
         let region: Region = self.aws_region.parse()?;
-        // Set access/secret in env as fallback
-        env::set_var("AWS_ACCESS_KEY_ID", aws_access);
-        env::set_var("AWS_SECRET_ACCESS_KEY", aws_secret);
-        let credentials =
-            Credentials::new_blocking(Some(aws_access), Some(aws_secret), None, None, None)?;
+        let credentials = Credentials::default_blocking()?;
         // Create new bucket instance
         let bucket = Bucket::new(&self.aws_bucket, region, credentials)?;
+
         // Set job metadata
         self.running = true;
         self.last_run = Local::now().timestamp();
@@ -62,6 +62,7 @@ impl Job {
         if self.first_run == 0 {
             self.first_run = Local::now().timestamp();
         }
+
         // TODO: S3 by default will allow 10 concurrent requests
         // For each file or dir, upload it
         let mut counter: usize = 0;
@@ -70,34 +71,56 @@ impl Job {
             // Check if file or directory exists
             if !Path::new(&f).exists() {
                 eprintln!(
-                    "{} > ({}/{}) '{}' can not be found.",
+                    "{} ⇉ '{}' can not be found. ({}/{})",
                     self.name,
+                    f.red(),
                     counter,
                     self.files.len(),
-                    f
                 );
                 continue;
             }
             // Check if f is file or directory
-            let file_md = metadata(f).expect("failed to get kip configuration metadata.");
-            if file_md.is_file() {
+            let fmd = metadata(f)?;
+            if fmd.is_file() {
                 // Encrypt file
                 let (encrypted, _) = match encrypt(&read(f)?, secret) {
-                    Ok(e) => e,
-                    Err(e) => panic!(e),
+                    Ok(ef) => ef,
+                    Err(e) => {
+                        return Result::Err(Box::new(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("{} failed to encrypt file: {:?}.", "[ERR]".red(), e),
+                        )));
+                    }
                 };
                 // Upload file
+                let full_path = fs::canonicalize(PathBuf::from(f))?;
                 let (_, status_code) = bucket.put_object_blocking(
-                    format!("/{}", f), // Folder Name - File Name
-                    &encrypted,        // Encrypted File Bytes
-                    "text/plain",      // Content-Type
+                    // Upload path within bucket
+                    format!("/{}{}", self.id, full_path.as_path().display()),
+                    &encrypted,   // Encrypted File Bytes
+                    "text/plain", // Content-Type
                 )?;
+
+                // let file_stream = tokio::fs::read(f.to_owned())
+                //     .into_stream()
+                //     .map_ok(Bytes::from);
+                // let s3_client = S3Client::new(Region::UsEast1);
+                // s3_client
+                //     .put_object(PutObjectRequest {
+                //         bucket: self.aws_bucket.clone(),
+                //         key: f.to_owned(),
+                //         content_length: Some(fmd.len() as i64),
+                //         body: Some(StreamingBody::new(file_stream)),
+                //         ..Default::default()
+                //     })
+                //     .await?;
+
                 // Check status code of upload
                 if status_code != 200 && status_code != 201 {
                     eprintln!(
-                        "{} > '{}' upload failed: HTTP {}. ({}/{})",
+                        "{} ⇉ '{}' upload failed: HTTP {}. ({}/{})",
                         self.name,
-                        f,
+                        f.red(),
                         status_code,
                         counter,
                         self.files.len(),
@@ -105,19 +128,19 @@ impl Job {
                 } else {
                     // Success
                     println!(
-                        "{} > '{}' uploaded successfully. ({}/{})",
+                        "{} ⇉ '{}' uploaded successfully. ({}/{})",
                         self.name,
-                        f,
+                        f.green(),
                         counter,
                         self.files.len(),
                     );
                 }
-            } else if file_md.is_dir() {
+            } else if fmd.is_dir() {
                 // If the listed file entry is a dir, use walkdir to
                 // walk all the recursive directories as well. Upload
                 // all files found within the directory.
                 for entry in WalkDir::new(f) {
-                    let entry = entry.expect("failed to get directory during upload.");
+                    let entry = entry.expect("[ERR] failed to get directory during upload.");
                     // If a directory, skip since upload will
                     // create the parent folder by default
                     let fmd = metadata(entry.path())?;
@@ -125,23 +148,29 @@ impl Job {
                         continue;
                     }
                     // Encrypt file
-                    let (encrypted, _) = match encrypt(&read(entry.path())?, secret) {
-                        Ok(e) => e,
-                        Err(e) => panic!(e),
+                    let (encrypted, _) = match encrypt(&read(f)?, secret) {
+                        Ok(ef) => ef,
+                        Err(e) => {
+                            return Result::Err(Box::new(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                format!("{} failed to encrypt file: {:?}.", "[ERR]".red(), e),
+                            )));
+                        }
                     };
                     // Upload file
+                    let full_path = fs::canonicalize(PathBuf::from(f))?;
                     let (_, status_code) = bucket.put_object_blocking(
-                        //format!("/{}/{}", self.id, entry.path().display()), // Folder Name - File Name
-                        format!("/{}", entry.path().display()),
+                        // Upload path within bucket
+                        format!("/{}{}", self.id, full_path.as_path().display()),
                         &encrypted,   // Encrypted File Bytes
                         "text/plain", // Content-Type
                     )?;
                     // Check status code of upload
                     if status_code != 200 && status_code != 201 {
                         println!(
-                            "{} > '{}' upload failed: HTTP {}. ({}/{})",
+                            "{} ⇉ '{}' upload failed: HTTP {}. ({}/{})",
                             self.name,
-                            f,
+                            f.red(),
                             status_code,
                             counter,
                             self.files.len(),
@@ -149,9 +178,9 @@ impl Job {
                     } else {
                         // Success
                         println!(
-                            "{} > '{}' uploaded successfully. ({}/{})",
+                            "{} ⇉ '{}' uploaded successfully. ({}/{})",
                             self.name,
-                            f,
+                            f.green(),
                             counter,
                             self.files.len(),
                         );
@@ -168,7 +197,7 @@ impl Job {
         unimplemented!()
     }
 
-    pub fn abort(&mut self) {
+    pub fn abort(mut self) {
         if self.running {
             self.running = false;
             println!("{} aborted.", self.name);
