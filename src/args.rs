@@ -64,6 +64,9 @@ pub enum Subcommands {
         ///
         #[structopt(short = "s", long = "secret")]
         secret: String,
+        ///
+        #[structopt(short = "o", long = "output")]
+        output: String,
     },
 
     /// Aborts any running or future upload on job

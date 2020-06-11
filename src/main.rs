@@ -21,7 +21,8 @@ use std::path::Path;
 use std::process;
 use structopt::StructOpt;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     // Writes default config if missing
     match KipConf::new() {
         Ok(_) => (),
@@ -33,7 +34,7 @@ fn main() {
     };
 
     // Create job pool for backup jobs
-    let job_pool = JobPool::new(4);
+    let job_pool = JobPool::new(5);
 
     // Get subcommands and args
     let args: Opt = Opt::from_args();
@@ -44,7 +45,10 @@ fn main() {
         // Create a new job
         Subcommands::Init { job } => {
             // Get config
-            let mut cfg = KipConf::get().expect("[ERR] failed to get kip configuration.");
+            let mut cfg = KipConf::get().unwrap_or_else(|e| {
+                eprintln!("{} failed to get kip configuration: {}.", "[ERR]".red(), e);
+                process::exit(1);
+            });
             // Ensure that job does not already exist with
             // the provided name.
             for (j, _) in cfg.jobs.iter() {
@@ -95,7 +99,10 @@ fn main() {
                 process::exit(1);
             }
             // Get config
-            let mut cfg = KipConf::get().expect("[ERR] failed to get kip configuration.");
+            let mut cfg = KipConf::get().unwrap_or_else(|e| {
+                eprintln!("{} failed to get kip configuration: {}.", "[ERR]".red(), e);
+                process::exit(1);
+            });
             // Get job from argument provided
             let j = cfg.jobs.get_mut(&job).unwrap_or_else(|| {
                 eprintln!("{} job '{}' doesn't exist.", "[ERR]".red(), &job);
@@ -121,14 +128,19 @@ fn main() {
         // Remove files from a job
         Subcommands::Remove { job, file_path } => {
             // Get config
-            let mut cfg = KipConf::get().expect("[ERR] failed to get kip configuration.");
+            let mut cfg = KipConf::get().unwrap_or_else(|e| {
+                eprintln!("{} failed to get kip configuration: {}.", "[ERR]".red(), e);
+                process::exit(1);
+            });
             // Get job from argument provided
             let j = cfg.jobs.get_mut(&job).unwrap_or_else(|| {
                 eprintln!("{} job '{}' doesn't exist.", "[ERR]".red(), &job);
                 process::exit(1);
             });
-            // Retain all elements != files_path argument provided
-            j.files.retain(|e| e != &file_path);
+            if j.files.contains(&file_path) {
+                // Retain all elements != files_path argument provided
+                j.files.retain(|e| e != &file_path);
+            }
             // Save changes to config file
             match cfg.save() {
                 Ok(_) => println!("{} files successfully removed from job.", "[OK]".green()),
@@ -139,10 +151,12 @@ fn main() {
         // Start a job's upload
         Subcommands::Push { job, secret } => {
             // Get config
-            let mut cfg = KipConf::get().expect("[ERR] failed to get kip configuration.");
-            // Prompt user for s3 info if nil or wrong format
-            // Probably used regex later but I don't want to
-            // right now.
+            let mut cfg = KipConf::get().unwrap_or_else(|e| {
+                eprintln!("{} failed to get kip configuration: {}.", "[ERR]".red(), e);
+                process::exit(1);
+            });
+            // Prompt user for s3 info if nil. Probably used
+            // regex later but I don't want to right now.
             if cfg.s3_access_key.len() == 0 || cfg.s3_secret_key.len() == 0 {
                 cfg.prompt_s3_keys();
             };
@@ -158,13 +172,25 @@ fn main() {
             // TODO: Propagate and bubble errors through upload
             let bkt_name = j.aws_bucket.clone();
             //job_pool.execute(move || {
-            match j.upload(&secret, &cfg.s3_access_key, &cfg.s3_secret_key) {
-                Ok(_) => println!(
-                    "{} job '{}' uploaded successfully to '{}'.",
-                    "[OK]".green(),
-                    &job,
-                    &bkt_name
-                ),
+            match j
+                .upload(&secret, &cfg.s3_access_key, &cfg.s3_secret_key)
+                .await
+            {
+                Ok(_) => {
+                    // Save changes to config file
+                    match cfg.save() {
+                        Ok(_) => (),
+                        Err(e) => {
+                            eprintln!("{} failed to save kip configuration: {}", "[ERR]".red(), e)
+                        }
+                    };
+                    println!(
+                        "{} job '{}' uploaded successfully to '{}'.",
+                        "[OK]".green(),
+                        &job,
+                        &bkt_name
+                    );
+                }
                 Err(e) => eprintln!(
                     "{} job '{}' upload to '{}' failed: {}",
                     "[ERR]".red(),
@@ -173,29 +199,55 @@ fn main() {
                     e
                 ),
             };
-            // Save updates to config
-            cfg.save().unwrap_or_else(|e| {
-                eprintln!("{} failed to save kip configuration: {}", "[ERR]".red(), e);
-            });
             //});
         }
 
         // Start a backup restore
-        Subcommands::Pull { job, secret } => {
-            println!("{}{}", job, secret);
+        Subcommands::Pull {
+            job,
+            secret,
+            output,
+        } => {
+            println!("{}{}{}", job, secret, output);
+            // Get config
+            let mut cfg = KipConf::get().unwrap_or_else(|e| {
+                eprintln!("{} failed to get kip configuration: {}.", "[ERR]".red(), e);
+                process::exit(1);
+            });
+            // Prompt user for s3 info if nil. Probably used
+            // regex later but I don't want to right now.
+            if cfg.s3_access_key.len() == 0 || cfg.s3_secret_key.len() == 0 {
+                cfg.prompt_s3_keys();
+            };
+            // Get job from argument provided
+            let j = match cfg.jobs.get_mut(&job) {
+                Some(j) => j.clone(),
+                None => {
+                    eprintln!("{} job '{}' doesn't exist.", "[ERR]".red(), &job);
+                    process::exit(1);
+                }
+            };
             // Only one restore can be happening at a time
-            job_pool.execute(|| {
-                unimplemented!();
-            })
+            //job_pool.execute(move || {
+            match j
+                .download(&secret, &cfg.s3_access_key, &cfg.s3_secret_key)
+                .await
+            {
+                Ok(_) => (),
+                Err(e) => panic!("{}", e),
+            };
+            //})
         }
 
         // Abort a running job
         Subcommands::Abort { job } => {
             // Get config
-            let mut cfg = KipConf::get().expect("[ERR] failed to get kip configuration.");
-            // Prompt user for s3 info if nil or wrong format
-            // Probably used regex later but I don't want to
-            // right now.
+            let mut cfg = KipConf::get().unwrap_or_else(|e| {
+                eprintln!("{} failed to get kip configuration: {}.", "[ERR]".red(), e);
+                process::exit(1);
+            });
+            // Prompt user for s3 info if nil. Probably used
+            // regex later but I don't want to right now.
             if cfg.s3_access_key.len() == 0 || cfg.s3_secret_key.len() == 0 {
                 cfg.prompt_s3_keys();
             };
@@ -216,7 +268,10 @@ fn main() {
         // Get the status of a job
         Subcommands::Status { job } => {
             // Get config
-            let cfg = KipConf::get().expect("[ERR] failed to get kip configuration.");
+            let cfg = KipConf::get().unwrap_or_else(|e| {
+                eprintln!("{} failed to get kip configuration: {}.", "[ERR]".red(), e);
+                process::exit(1);
+            });
             // Get job from argument provided
             let j = cfg.jobs.get(&job).unwrap_or_else(|| {
                 eprintln!("{} job '{}' doesn't exist.", "[ERR]".red(), &job);
@@ -228,23 +283,41 @@ fn main() {
         // List all jobs
         Subcommands::List {} => {
             // Get config
-            let cfg = KipConf::get().expect("[ERR] failed to get kip configuration.");
+            let cfg = KipConf::get().unwrap_or_else(|e| {
+                eprintln!("{} failed to get kip configuration: {}.", "[ERR]".red(), e);
+                process::exit(1);
+            });
             // Create the table
             let mut table = Table::new();
             // Create the title row
             table.add_row(row![
-                "Name", "ID", "Bucket", "Region", "Files", "Last Run", "Running"
+                "Name",
+                "ID",
+                "Bucket",
+                "Region",
+                "Files",
+                "Total Runs",
+                "Last Run",
+                "Status"
             ]);
             // For each job, add a row
             for (_, j) in cfg.jobs {
+                #[allow(unused_assignments)]
+                let mut correct_last_run = String::from("");
+                if j.last_run.format("%Y-%m-%d %H:%M:%S").to_string() == "1970-01-01 00:00:00" {
+                    correct_last_run = "NEVER_RUN".to_string();
+                } else {
+                    correct_last_run = j.last_run.clone().to_string();
+                }
                 table.add_row(row![
                     format!("{}", j.name),
                     format!("{}", j.id),
                     format!("{}", j.aws_bucket),
                     format!("{}", j.aws_region),
                     format!("{}", j.files.len()),
-                    format!("{}", j.last_run),
-                    format!("{}", j.running),
+                    format!("{}", j.total_runs),
+                    format!("{}", correct_last_run),
+                    format!("{:?}", j.last_status),
                 ]);
             }
             // Print the job table
