@@ -66,7 +66,7 @@ pub enum Subcommands {
         secret: String,
         ///
         #[structopt(short = "o", long = "output")]
-        output: String,
+        output_folder: String,
     },
 
     /// Aborts any running or future upload on job

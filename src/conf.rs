@@ -11,7 +11,7 @@ use std::path::Path;
 const KIP_CONF: &'static str = "kip_test/kip.json";
 const KIP_CONF_DIR: &'static str = "kip_test";
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct KipConf {
     pub s3_access_key: String,
     pub s3_secret_key: String,

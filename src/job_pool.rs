@@ -45,6 +45,18 @@ impl JobPool {
                 eprintln!("{} failed to send job to rx channel: {}", "[ERR]".red(), e);
             });
     }
+
+    pub fn kill_worker(&mut self, worker_id: usize) {
+        // Loop through workers and terminate their thread
+        for worker in &mut self.workers {
+            if worker.id == worker_id {
+                if let Some(thread) = worker.thread.take() {
+                    thread.join().unwrap();
+                    break;
+                }
+            }
+        }
+    }
 }
 
 impl Drop for JobPool {

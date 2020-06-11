@@ -20,6 +20,7 @@ use std::io::prelude::*;
 use std::path::Path;
 use std::process;
 use structopt::StructOpt;
+use walkdir::WalkDir;
 
 #[tokio::main]
 async fn main() {
@@ -77,11 +78,7 @@ async fn main() {
                 .read_line(&mut s3_region)
                 .expect("[ERR] failed to read from stdin.");
             // Create the new job
-            let new_job = Job::new(
-                &job.clone(),
-                &s3_bucket_name.clone().trim_end(),
-                &s3_region.clone().trim_end(),
-            );
+            let new_job = Job::new(&job, &s3_bucket_name.trim_end(), &s3_region.trim_end());
             // Push new job in config
             cfg.jobs.insert(job.clone(), new_job);
             // // Store new job in config
@@ -157,7 +154,7 @@ async fn main() {
             });
             // Prompt user for s3 info if nil. Probably used
             // regex later but I don't want to right now.
-            if cfg.s3_access_key.len() == 0 || cfg.s3_secret_key.len() == 0 {
+            if cfg.s3_access_key.is_empty() || cfg.s3_secret_key.is_empty() {
                 cfg.prompt_s3_keys();
             };
             // Get job from argument provided
@@ -172,18 +169,8 @@ async fn main() {
             // TODO: Propagate and bubble errors through upload
             let bkt_name = j.aws_bucket.clone();
             //job_pool.execute(move || {
-            match j
-                .upload(&secret, &cfg.s3_access_key, &cfg.s3_secret_key)
-                .await
-            {
+            match j.upload(cfg.clone(), &secret).await {
                 Ok(_) => {
-                    // Save changes to config file
-                    match cfg.save() {
-                        Ok(_) => (),
-                        Err(e) => {
-                            eprintln!("{} failed to save kip configuration: {}", "[ERR]".red(), e)
-                        }
-                    };
                     println!(
                         "{} job '{}' uploaded successfully to '{}'.",
                         "[OK]".green(),
@@ -206,9 +193,8 @@ async fn main() {
         Subcommands::Pull {
             job,
             secret,
-            output,
+            output_folder,
         } => {
-            println!("{}{}{}", job, secret, output);
             // Get config
             let mut cfg = KipConf::get().unwrap_or_else(|e| {
                 eprintln!("{} failed to get kip configuration: {}.", "[ERR]".red(), e);
@@ -216,7 +202,7 @@ async fn main() {
             });
             // Prompt user for s3 info if nil. Probably used
             // regex later but I don't want to right now.
-            if cfg.s3_access_key.len() == 0 || cfg.s3_secret_key.len() == 0 {
+            if cfg.s3_access_key.is_empty() || cfg.s3_secret_key.is_empty() {
                 cfg.prompt_s3_keys();
             };
             // Get job from argument provided
@@ -230,7 +216,12 @@ async fn main() {
             // Only one restore can be happening at a time
             //job_pool.execute(move || {
             match j
-                .download(&secret, &cfg.s3_access_key, &cfg.s3_secret_key)
+                .download(
+                    &secret,
+                    &cfg.s3_access_key,
+                    &cfg.s3_secret_key,
+                    &output_folder,
+                )
                 .await
             {
                 Ok(_) => (),
@@ -261,6 +252,11 @@ async fn main() {
             };
             // Abort job
             job_pool.execute(move || {
+                // Grab the job's thread id and
+                // thread.join() to kill it. Since we
+                // aren't doing multipart, we can't
+                // abort from S3's API :/
+                // IDK how to do this lol
                 j.abort();
             })
         }
@@ -303,20 +299,45 @@ async fn main() {
             // For each job, add a row
             for (_, j) in cfg.jobs {
                 #[allow(unused_assignments)]
-                let mut correct_last_run = String::from("");
-                if j.last_run.format("%Y-%m-%d %H:%M:%S").to_string() == "1970-01-01 00:00:00" {
-                    correct_last_run = "NEVER_RUN".to_string();
+                // let mut correct_last_run = String::from("");
+                // Get correct time
+                // if j.last_run.format("%Y-%m-%d %H:%M:%S").to_string() == "1970-01-01 00:00:00" {
+                //     correct_last_run = "NEVER_RUN".to_string();
+                // } else {
+                //     correct_last_run = j.last_run.clone().to_string();
+                // }
+                let correct_last_run = if j.last_run.format("%Y-%m-%d %H:%M:%S").to_string()
+                    == "1970-01-01 00:00:00"
+                {
+                    "NEVER_RUN".to_string()
                 } else {
-                    correct_last_run = j.last_run.clone().to_string();
+                    j.last_run.clone().to_string()
+                };
+                // Get correct number of files in job (not just...
+                // entries within 'files')
+                let mut correct_files_num = 0;
+                for f in j.files {
+                    if Path::new(&f).exists() && Path::new(&f).is_dir() {
+                        for entry in WalkDir::new(f) {
+                            let entry = entry.unwrap();
+                            if Path::is_dir(entry.path()) {
+                                continue;
+                            }
+                            correct_files_num += 1;
+                        }
+                    } else if Path::new(&f).exists() {
+                        correct_files_num += 1;
+                    }
                 }
+                // Add row with job info
                 table.add_row(row![
-                    format!("{}", j.name),
+                    format!("{}", j.name.to_string()),
                     format!("{}", j.id),
-                    format!("{}", j.aws_bucket),
-                    format!("{}", j.aws_region),
-                    format!("{}", j.files.len()),
+                    format!("{}", j.aws_bucket.to_string()),
+                    format!("{}", j.aws_region.to_string()),
+                    format!("{}", correct_files_num),
                     format!("{}", j.total_runs),
-                    format!("{}", correct_last_run),
+                    format!("{}", correct_last_run.to_string()),
                     format!("{:?}", j.last_status),
                 ]);
             }

@@ -1,3 +1,4 @@
+use crate::conf::KipConf;
 use crate::crypto::{decrypt, encrypt};
 use chrono::prelude::*;
 use colored::*;
@@ -84,6 +85,7 @@ impl Job {
         secret: &str,
         aws_access: &str,
         aws_secret: &str,
+        output: &str,
     ) -> Result<(), Box<dyn Error>> {
         // Set job metadata
         self.last_run = Utc::now();
@@ -102,9 +104,6 @@ impl Job {
             Job::parse_s3_region(self.aws_region.clone()),
         )
         .await?;
-        // TODO: remove
-        println!("{:?}", bucket_objects);
-        //
         // For each object in the bucket, download it
         for ob in bucket_objects {
             s3_download(
@@ -112,6 +111,7 @@ impl Job {
                 &self.aws_bucket,
                 Job::parse_s3_region(self.aws_region.clone()),
                 secret,
+                output,
             )
             .await?;
         }
@@ -123,12 +123,7 @@ impl Job {
         Ok(())
     }
 
-    pub async fn upload(
-        mut self,
-        secret: &str,
-        aws_access: &str,
-        aws_secret: &str,
-    ) -> Result<(), Box<dyn Error>> {
+    pub async fn upload(mut self, cfg: KipConf, secret: &str) -> Result<(), Box<dyn Error>> {
         // Set job metadata
         self.last_run = Utc::now();
         self.total_runs += 1;
@@ -137,8 +132,8 @@ impl Job {
         }
         self.last_status = JobStatus::IN_PROGRESS;
         // Set AWS env vars for backup
-        env::set_var("AWS_ACCESS_KEY_ID", &aws_access);
-        env::set_var("AWS_SECRET_ACCESS_KEY", &aws_secret);
+        env::set_var("AWS_ACCESS_KEY_ID", &cfg.s3_access_key);
+        env::set_var("AWS_SECRET_ACCESS_KEY", &cfg.s3_secret_key);
         env::set_var("AWS_REGION", &self.aws_region);
         // TODO: S3 by default will allow 10 concurrent requests
         // For each file or dir, upload it
@@ -246,6 +241,8 @@ impl Job {
         env::set_var("AWS_ACCESS_KEY_ID", "");
         env::set_var("AWS_SECRET_ACCESS_KEY", "");
         env::set_var("AWS_REGION", "");
+        // Save changes to config file
+        cfg.save()?;
         // Done
         Ok(())
     }
@@ -297,16 +294,15 @@ async fn s3_download(
     aws_bucket: &str,
     aws_region: Region,
     secret: &str,
+    output: &str,
 ) -> Result<(), Box<dyn Error>> {
-    // Get full path of file
-    let full_path = fs::canonicalize(PathBuf::from(f))?;
     // Create S3 client with specifc region
     let s3_client = S3Client::new(aws_region);
     // GET!
     let result = s3_client
         .get_object(GetObjectRequest {
             bucket: aws_bucket.clone().to_string(),
-            key: full_path.as_path().display().to_string(),
+            key: f.to_string(),
             ..Default::default()
         })
         .await?;
@@ -325,8 +321,23 @@ async fn s3_download(
         }
     };
     // Create and write decrypted file
-    let mut dfile = File::create(f)?;
-    dfile.write_all(&decrypted)?;
+    // for entry in WalkDir::new(Path::new(output).join(f)) {
+    //     let entry = entry?;
+    //     let fmd = metadata(entry.path())?;
+    //     if Path::is_dir(entry.path()) {
+    //         std::fs::create_dir(Path::new(output).join(entry.path()))?;
+    //         println!("made dir {:?}", Path::new(output).join(entry.path()));
+    //     };
+    // }
+    // Create new file and write the decrypted bytes
+    match std::fs::create_dir_all(Path::new(output).join(f)) {
+        Ok(_) => (),
+        Err(_) => (),
+    };
+    if !Path::new(output).join(f).exists() {
+        let mut dfile = File::create(Path::new(output).join(f))?;
+        dfile.write_all(&decrypted)?;
+    }
     // Success
     Ok(())
 }
@@ -343,6 +354,8 @@ async fn list_s3_bucket(
             ..ListObjectsV2Request::default()
         })
         .await?;
+    // Convert S3 result into Vec<S3::Object> which can
+    // be used to manipulate the list od files in S3.
     let contents = result
         .contents
         .unwrap_or_default()
