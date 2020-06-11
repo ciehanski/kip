@@ -7,12 +7,12 @@ use sha3::{Digest, Sha3_256};
 pub fn encrypt(plaintext: &[u8], secret: &str) -> Result<Vec<u8>, aead::Error> {
     // Create a SHA3-256 object
     let mut hasher = Sha3_256::new();
-    // Write password
+    // Write password's bytes into hasher
     hasher.input(secret.as_bytes());
     // SHA3-256 32-byte secret
     let hashed_secret = hasher.result();
     let key = GenericArray::from_slice(&hashed_secret);
-    // New XChaCha20Poly1305 from key
+    // New XChaCha20Poly1305 from hashed_secret
     let aead = XChaCha20Poly1305::new(key);
     // Generate nonce - 24-bytes; unique
     let nonce_str = generate_nonce();
@@ -29,14 +29,14 @@ pub fn encrypt(plaintext: &[u8], secret: &str) -> Result<Vec<u8>, aead::Error> {
 pub fn decrypt(ciphertext: &[u8], secret: &str) -> Result<Vec<u8>, aead::Error> {
     // Create a SHA3-256 object
     let mut hasher = Sha3_256::new();
-    // Write password
+    // Write password's bytes into hasher
     hasher.input(secret.as_bytes());
     // SHA3-256 32-byte secret
     let hashed_secret = hasher.result();
     let key = GenericArray::from_slice(&hashed_secret);
-    // New XChaCha20Poly1305 from hashed secret
+    // New XChaCha20Poly1305 from hashed_secret
     let aead = XChaCha20Poly1305::new(key);
-    // Pop nonce off ciphertext for decryption
+    // Pop off nonce from ciphertext for decryption
     let mut cipher_vec = ciphertext.to_vec();
     let mut nonce_vec: Vec<u8> = Vec::with_capacity(24);
     // Pop off the last 24 bytes of ciphertext
