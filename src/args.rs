@@ -29,19 +29,18 @@ pub enum Subcommands {
         job: String,
         /// which
         #[structopt(short = "f", long = "files")]
-        file_path: String,
+        file_path: Vec<String>,
     },
 
     /// Removes files from a job
     ///
-    #[structopt(name = "remove")]
+    #[structopt(name = "remove", alias = "rm")]
     Remove {
         /// Name of the job you want to remove files from
-        #[structopt(short = "j", long = "job")]
         job: String,
         /// The IP address the C2 server will bind to
         #[structopt(short = "f", long = "files")]
-        file_path: String,
+        file_path: Option<Vec<String>>,
     },
 
     /// Starts a manual backup job
@@ -66,7 +65,7 @@ pub enum Subcommands {
         secret: String,
         ///
         #[structopt(short = "o", long = "output")]
-        output_folder: String,
+        output_folder: Option<String>,
     },
 
     /// Aborts any running or future upload on job
@@ -87,6 +86,6 @@ pub enum Subcommands {
 
     /// Lists all jobs and their configurations
     ///
-    #[structopt(name = "list")]
+    #[structopt(name = "list", alias = "ls")]
     List {},
 }

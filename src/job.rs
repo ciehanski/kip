@@ -8,6 +8,7 @@ use rusoto_s3::{
 };
 use serde::{Deserialize, Serialize};
 use std::error::Error;
+use std::fmt;
 use std::fs::{metadata, read, File};
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
@@ -23,10 +24,12 @@ pub struct Job {
     pub aws_bucket: String,
     pub aws_region: String,
     pub files: Vec<String>,
+    pub files_amt: usize,
     pub first_run: DateTime<Utc>,
     pub last_run: DateTime<Utc>,
     pub total_runs: usize,
     pub last_status: JobStatus,
+    // pub runs: HashMap<Run>
     // pub errors: Vec<dyn Error>,
 }
 
@@ -39,6 +42,17 @@ pub enum JobStatus {
     NEVER_RUN,
 }
 
+impl fmt::Display for JobStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            JobStatus::OK => write!(f, "OK"),
+            JobStatus::ERR => write!(f, "ERR"),
+            JobStatus::IN_PROGRESS => write!(f, "IN_PROGRESS"),
+            JobStatus::NEVER_RUN => write!(f, "NEVER_RUN"),
+        }
+    }
+}
+
 impl Job {
     pub fn new(name: &str, aws_bucket: &str, aws_region: &str) -> Self {
         Job {
@@ -47,6 +61,7 @@ impl Job {
             aws_bucket: aws_bucket.to_string(),
             aws_region: aws_region.to_string(),
             files: Vec::<String>::new(),
+            files_amt: 0,
             first_run: Utc.ymd(1970, 1, 1).and_hms(0, 0, 0),
             last_run: Utc.ymd(1970, 1, 1).and_hms(0, 0, 0),
             total_runs: 0,
@@ -54,8 +69,8 @@ impl Job {
         }
     }
 
+    // Parse aws region input into a Region object
     fn parse_s3_region(s3_region: String) -> Region {
-        // Parse aws region input into a Region object
         match &s3_region[..] {
             "ap-east-1" => Region::ApEast1,
             "ap-northeast-1" => Region::ApNortheast1,
@@ -80,13 +95,37 @@ impl Job {
         }
     }
 
-    pub async fn download(
+    // Get correct number of files in job (not just...
+    // entries within 'files')
+    pub fn get_files_amt(&self) -> usize {
+        let mut correct_files_num: usize = 0;
+        for f in self.files.iter() {
+            if Path::new(&f).exists() && Path::new(&f).is_dir() {
+                for entry in WalkDir::new(f) {
+                    let entry = entry.unwrap();
+                    if Path::is_dir(entry.path()) {
+                        continue;
+                    }
+                    correct_files_num += 1;
+                }
+            } else if Path::new(&f).exists() {
+                correct_files_num += 1;
+            }
+        }
+        correct_files_num
+    }
+
+    pub async fn restore(
         mut self,
         secret: &str,
         aws_access: &str,
         aws_secret: &str,
-        output: &str,
+        output: Option<String>,
     ) -> Result<(), Box<dyn Error>> {
+        // Set AWS env vars for backup
+        env::set_var("AWS_ACCESS_KEY_ID", &aws_access);
+        env::set_var("AWS_SECRET_ACCESS_KEY", &aws_secret);
+        env::set_var("AWS_REGION", &self.aws_region);
         // Set job metadata
         self.last_run = Utc::now();
         self.total_runs += 1;
@@ -94,26 +133,51 @@ impl Job {
             self.first_run = Utc::now();
         }
         self.last_status = JobStatus::IN_PROGRESS;
-        // Set AWS env vars for backup
-        env::set_var("AWS_ACCESS_KEY_ID", &aws_access);
-        env::set_var("AWS_SECRET_ACCESS_KEY", &aws_secret);
-        env::set_var("AWS_REGION", &self.aws_region);
         // get all bucket contents
         let bucket_objects = list_s3_bucket(
             &self.aws_bucket,
             Job::parse_s3_region(self.aws_region.clone()),
         )
         .await?;
+        // Get output folder
+        let output = output.unwrap_or_default();
         // For each object in the bucket, download it
+        let mut counter: usize = 0;
         for ob in bucket_objects {
-            s3_download(
-                &ob.key.unwrap(),
+            // Increment file counter
+            counter += 1;
+            // Download file
+            match s3_download(
+                &ob.key.clone().unwrap(),
                 &self.aws_bucket,
                 Job::parse_s3_region(self.aws_region.clone()),
                 secret,
-                output,
+                &output,
             )
-            .await?;
+            .await
+            {
+                Ok(_) => {
+                    self.last_status = JobStatus::OK;
+                    println!(
+                        "{} ⇉ '{}' restored successfully. ({}/{})",
+                        self.name,
+                        ob.key.unwrap().green(),
+                        counter,
+                        self.files_amt,
+                    );
+                }
+                Err(e) => {
+                    self.last_status = JobStatus::ERR;
+                    eprintln!(
+                        "{} ⇉ '{}' restore failed: {}. ({}/{})",
+                        self.name,
+                        ob.key.unwrap().green(),
+                        e,
+                        counter,
+                        self.files_amt,
+                    );
+                }
+            }
         }
         // Reset AWS env env to nil
         env::set_var("AWS_ACCESS_KEY_ID", "");
@@ -124,6 +188,10 @@ impl Job {
     }
 
     pub async fn upload(mut self, cfg: KipConf, secret: &str) -> Result<(), Box<dyn Error>> {
+        // Set AWS env vars for backup
+        env::set_var("AWS_ACCESS_KEY_ID", &cfg.s3_access_key);
+        env::set_var("AWS_SECRET_ACCESS_KEY", &cfg.s3_secret_key);
+        env::set_var("AWS_REGION", &self.aws_region);
         // Set job metadata
         self.last_run = Utc::now();
         self.total_runs += 1;
@@ -131,15 +199,10 @@ impl Job {
             self.first_run = Utc::now();
         }
         self.last_status = JobStatus::IN_PROGRESS;
-        // Set AWS env vars for backup
-        env::set_var("AWS_ACCESS_KEY_ID", &cfg.s3_access_key);
-        env::set_var("AWS_SECRET_ACCESS_KEY", &cfg.s3_secret_key);
-        env::set_var("AWS_REGION", &self.aws_region);
         // TODO: S3 by default will allow 10 concurrent requests
         // For each file or dir, upload it
         let mut counter: usize = 0;
         for f in self.files.iter() {
-            counter += 1;
             // Check if file or directory exists
             if !Path::new(&f).exists() {
                 eprintln!(
@@ -147,13 +210,15 @@ impl Job {
                     self.name,
                     f.red(),
                     counter,
-                    self.files.len(),
+                    self.files_amt,
                 );
                 continue;
             }
             // Check if f is file or directory
             let fmd = metadata(f)?;
             if fmd.is_file() {
+                // Increase file counter
+                counter += 1;
                 // Upload
                 match s3_upload(
                     f,
@@ -173,7 +238,7 @@ impl Job {
                             f.green(),
                             self.aws_bucket.clone(),
                             counter,
-                            self.files.len(),
+                            self.files_amt,
                         );
                     }
                     Err(e) => {
@@ -184,7 +249,7 @@ impl Job {
                             f.red(),
                             e,
                             counter,
-                            self.files.len(),
+                            self.files_amt,
                         );
                     }
                 };
@@ -200,6 +265,8 @@ impl Job {
                     if fmd.is_dir() {
                         continue;
                     }
+                    // Increase file counter
+                    counter += 1;
                     // Upload
                     match s3_upload(
                         &entry.path().display().to_string(),
@@ -219,7 +286,7 @@ impl Job {
                                 entry.path().display().to_string().green(),
                                 self.aws_bucket.clone(),
                                 counter,
-                                self.files.len(),
+                                self.files_amt,
                             );
                         }
                         Err(e) => {
@@ -230,7 +297,7 @@ impl Job {
                                 f.red(),
                                 e,
                                 counter,
-                                self.files.len(),
+                                self.files_amt,
                             );
                         }
                     };
@@ -320,20 +387,11 @@ async fn s3_download(
             )));
         }
     };
-    // Create and write decrypted file
-    // for entry in WalkDir::new(Path::new(output).join(f)) {
-    //     let entry = entry?;
-    //     let fmd = metadata(entry.path())?;
-    //     if Path::is_dir(entry.path()) {
-    //         std::fs::create_dir(Path::new(output).join(entry.path()))?;
-    //         println!("made dir {:?}", Path::new(output).join(entry.path()));
-    //     };
-    // }
-    // Create new file and write the decrypted bytes
-    match std::fs::create_dir_all(Path::new(output).join(f)) {
-        Ok(_) => (),
-        Err(_) => (),
-    };
+    // Create root directory if missing
+    let mut folder_path = Path::new(output).join(f);
+    folder_path.pop();
+    std::fs::create_dir_all(folder_path)?;
+    // Create the file
     if !Path::new(output).join(f).exists() {
         let mut dfile = File::create(Path::new(output).join(f))?;
         dfile.write_all(&decrypted)?;

@@ -8,9 +8,9 @@ pub fn encrypt(plaintext: &[u8], secret: &str) -> Result<Vec<u8>, aead::Error> {
     // Create a SHA3-256 object
     let mut hasher = Sha3_256::new();
     // Write password's bytes into hasher
-    hasher.input(secret.as_bytes());
+    hasher.update(secret.as_bytes());
     // SHA3-256 32-byte secret
-    let hashed_secret = hasher.result();
+    let hashed_secret = hasher.finalize();
     let key = GenericArray::from_slice(&hashed_secret);
     // New XChaCha20Poly1305 from hashed_secret
     let aead = XChaCha20Poly1305::new(key);
@@ -30,22 +30,14 @@ pub fn decrypt(ciphertext: &[u8], secret: &str) -> Result<Vec<u8>, aead::Error> 
     // Create a SHA3-256 object
     let mut hasher = Sha3_256::new();
     // Write password's bytes into hasher
-    hasher.input(secret.as_bytes());
+    hasher.update(secret.as_bytes());
     // SHA3-256 32-byte secret
-    let hashed_secret = hasher.result();
+    let hashed_secret = hasher.finalize();
     let key = GenericArray::from_slice(&hashed_secret);
     // New XChaCha20Poly1305 from hashed_secret
     let aead = XChaCha20Poly1305::new(key);
     // Pop off nonce from ciphertext for decryption
-    let mut cipher_vec = ciphertext.to_vec();
-    let mut nonce_vec: Vec<u8> = Vec::with_capacity(24);
-    // Pop off the last 24 bytes of ciphertext
-    for _ in 0..24 {
-        let nonce_byte = cipher_vec.pop().unwrap_or_default();
-        nonce_vec.push(nonce_byte);
-    }
-    // Reverse nonce since pop works backwards
-    let nonce_vec: Vec<u8> = nonce_vec.into_iter().rev().collect();
+    let (nonce_vec, cipher_vec) = extract_nonce(ciphertext);
     // Generate nonce - 24-bytes; unique
     let nonce = GenericArray::from_slice(&nonce_vec);
     // Decrypt
@@ -64,7 +56,24 @@ fn generate_nonce() -> String {
         let rn = OsRng.gen_range(0, 9);
         nonce.push_str(&rn.to_string());
     }
+    // Ship it
     nonce
+}
+
+// Extracts the nonce from the end of the ciphertext
+fn extract_nonce(ciphertext: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    // Pop off nonce from ciphertext for decryption
+    let mut cipher_vec = ciphertext.to_vec();
+    let mut nonce_vec: Vec<u8> = Vec::with_capacity(24);
+    // Pop off the last 24 bytes of ciphertext
+    for _ in 0..24 {
+        let nonce_byte = cipher_vec.pop().unwrap_or_default();
+        nonce_vec.push(nonce_byte);
+    }
+    // Reverse nonce since pop works backwards
+    let nonce_vec: Vec<u8> = nonce_vec.into_iter().rev().collect();
+    // Ship it
+    (nonce_vec, cipher_vec)
 }
 
 #[cfg(test)]

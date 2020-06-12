@@ -1,6 +1,3 @@
-#[macro_use]
-extern crate prettytable;
-
 mod args;
 mod conf;
 mod crypto;
@@ -15,12 +12,12 @@ use crate::job_pool::JobPool;
 
 // External imports
 use colored::*;
-use prettytable::Table;
+use dialoguer::Confirm;
+use prettytable::{Cell, Row, Table};
 use std::io::prelude::*;
 use std::path::Path;
 use std::process;
 use structopt::StructOpt;
-use walkdir::WalkDir;
 
 #[tokio::main]
 async fn main() {
@@ -88,12 +85,15 @@ async fn main() {
             };
         }
 
+        // TODO: fix all the for loops in add. I don't like them
         // Add more files or directories to job
         Subcommands::Add { job, file_path } => {
             // Check if file or directory exists
-            if !Path::new(&file_path).exists() {
-                eprintln!("{} '{}' doesn't exist.", "[ERR]".red(), file_path);
-                process::exit(1);
+            for f in &file_path {
+                if !Path::new(&f).exists() {
+                    eprintln!("{} '{}' doesn't exist.", "[ERR]".red(), f);
+                    process::exit(1);
+                }
             }
             // Get config
             let mut cfg = KipConf::get().unwrap_or_else(|e| {
@@ -101,25 +101,35 @@ async fn main() {
                 process::exit(1);
             });
             // Get job from argument provided
-            let j = cfg.jobs.get_mut(&job).unwrap_or_else(|| {
+            let mut j = cfg.jobs.get_mut(&job).unwrap_or_else(|| {
                 eprintln!("{} job '{}' doesn't exist.", "[ERR]".red(), &job);
                 process::exit(1);
             });
             // Check if files already exist on job
             // to avoid duplication.
-            for f in &j.files {
-                if f == &file_path {
-                    eprintln!("{} file(s) already exist on job '{}'.", "[ERR]".red(), &job);
-                    process::exit(1);
+            for jf in &j.files {
+                for f in &file_path {
+                    if jf == f {
+                        eprintln!("{} file(s) already exist on job '{}'.", "[ERR]".red(), &job);
+                        process::exit(1);
+                    }
                 }
             }
             // Push new files to job
-            j.files.push(file_path);
+            for f in file_path {
+                j.files.push(f);
+            }
+            // Get new files amount for job
+            j.files_amt = j.get_files_amt();
             // Save changes to config file
             match cfg.save() {
-                Ok(_) => println!("{} files successfully added to job.", "[OK]".green()),
+                Ok(_) => println!(
+                    "{} files successfully added to job '{}'.",
+                    "[OK]".green(),
+                    &job
+                ),
                 Err(e) => eprintln!("{} failed to save kip configuration: {}", "[ERR]".red(), e),
-            };
+            }
         }
 
         // Remove files from a job
@@ -134,15 +144,55 @@ async fn main() {
                 eprintln!("{} job '{}' doesn't exist.", "[ERR]".red(), &job);
                 process::exit(1);
             });
-            if j.files.contains(&file_path) {
-                // Retain all elements != files_path argument provided
-                j.files.retain(|e| e != &file_path);
+            // Confirm removal
+            if !Confirm::new()
+                .with_prompt("Are you sure you want to remove this?")
+                .interact()
+                .unwrap_or(false)
+            {
+                process::exit(0);
             }
-            // Save changes to config file
-            match cfg.save() {
-                Ok(_) => println!("{} files successfully removed from job.", "[OK]".green()),
-                Err(e) => eprintln!("{} failed to save kip configuration: {}", "[ERR]".red(), e),
-            };
+            // If -f flag was provided or not
+            match file_path {
+                // -f was provided, delete files from job
+                Some(file) => {
+                    for f in file {
+                        if j.files.contains(&f) {
+                            // Retain all elements != files_path argument provided
+                            j.files.retain(|i| i != &f);
+                            // Get new files amount for job
+                            j.files_amt = j.get_files_amt();
+                        } else {
+                            eprintln!("{} job {} does not contain '{}'.", "[err]".red(), j.name, f,);
+                            process::exit(1);
+                        };
+                    }
+                    // Save changes to config file
+                    match cfg.save() {
+                        Ok(_) => println!(
+                            "{} files successfully removed from job '{}'.",
+                            "[OK]".green(),
+                            &job
+                        ),
+                        Err(e) => {
+                            eprintln!("{} failed to save kip configuration: {}", "[ERR]".red(), e)
+                        }
+                    }
+                }
+                None => {
+                    // -f was not provided, delete the job
+                    cfg.jobs.remove(&job);
+                    // Save changes to config file
+                    match cfg.save() {
+                        Ok(_) => {
+                            println!("{} job '{}' successfully removed.", "[OK]".green(), &job)
+                        }
+                        Err(e) => {
+                            eprintln!("{} failed to save kip configuration: {}", "[ERR]".red(), e)
+                        }
+                    }
+                }
+            }
         }
 
         // Start a job's upload
@@ -158,13 +208,15 @@ async fn main() {
                 cfg.prompt_s3_keys();
             };
             // Get job from argument provided
-            let j = match cfg.jobs.get_mut(&job) {
+            let mut j = match cfg.jobs.get_mut(&job) {
                 Some(j) => j.clone(),
                 None => {
                     eprintln!("{} job '{}' doesn't exist.", "[ERR]".red(), &job);
                     process::exit(1);
                 }
             };
+            // Get new files amount for job
+            j.files_amt = j.get_files_amt();
             // Upload all files in a seperate thread
             // TODO: Propagate and bubble errors through upload
             let bkt_name = j.aws_bucket.clone();
@@ -216,17 +268,26 @@ async fn main() {
             // Only one restore can be happening at a time
             //job_pool.execute(move || {
             match j
-                .download(
+                .restore(
                     &secret,
                     &cfg.s3_access_key,
                     &cfg.s3_secret_key,
-                    &output_folder,
+                    output_folder,
                 )
                 .await
             {
-                Ok(_) => (),
-                Err(e) => panic!("{}", e),
+                Ok(_) => {
+                    println!("{} job '{}' restored successfully.", "[OK]".green(), &job,);
+                }
+                Err(e) => {
+                    eprintln!("{} job '{}' restore failed: {}", "[ERR]".red(), &job, e);
+                }
             };
+            // Save changes to config file
+            match cfg.save() {
+                Ok(_) => (),
+                Err(e) => eprintln!("{} failed to save kip configuration: {}", "[ERR]".red(), e),
+            }
             //})
         }
 
@@ -250,15 +311,23 @@ async fn main() {
                     process::exit(1);
                 }
             };
+            // Confirm removal
+            if !Confirm::new()
+                .with_prompt(format!("Are you sure you want to abort '{}'?", &job))
+                .interact()
+                .unwrap_or(false)
+            {
+                process::exit(0);
+            }
             // Abort job
-            job_pool.execute(move || {
-                // Grab the job's thread id and
-                // thread.join() to kill it. Since we
-                // aren't doing multipart, we can't
-                // abort from S3's API :/
-                // IDK how to do this lol
-                j.abort();
-            })
+            //job_pool.execute(move || {
+            // Grab the job's thread id and
+            // thread.join() to kill it. Since we
+            // aren't doing multipart, we can't
+            // abort from S3's API :/
+            // IDK how to do this lol
+            j.abort();
+            //})
         }
 
         // Get the status of a job
@@ -286,26 +355,18 @@ async fn main() {
             // Create the table
             let mut table = Table::new();
             // Create the title row
-            table.add_row(row![
-                "Name",
-                "ID",
-                "Bucket",
-                "Region",
-                "Files",
-                "Total Runs",
-                "Last Run",
-                "Status"
-            ]);
+            table.add_row(Row::new(vec![
+                Cell::new("Name"),
+                Cell::new("ID"),
+                Cell::new("Bucket"),
+                Cell::new("Region"),
+                Cell::new("Files"),
+                Cell::new("Total Runs"),
+                Cell::new("Last Run"),
+                Cell::new("Status"),
+            ]));
             // For each job, add a row
             for (_, j) in cfg.jobs {
-                #[allow(unused_assignments)]
-                // let mut correct_last_run = String::from("");
-                // Get correct time
-                // if j.last_run.format("%Y-%m-%d %H:%M:%S").to_string() == "1970-01-01 00:00:00" {
-                //     correct_last_run = "NEVER_RUN".to_string();
-                // } else {
-                //     correct_last_run = j.last_run.clone().to_string();
-                // }
                 let correct_last_run = if j.last_run.format("%Y-%m-%d %H:%M:%S").to_string()
                     == "1970-01-01 00:00:00"
                 {
@@ -313,33 +374,17 @@ async fn main() {
                 } else {
                     j.last_run.clone().to_string()
                 };
-                // Get correct number of files in job (not just...
-                // entries within 'files')
-                let mut correct_files_num = 0;
-                for f in j.files {
-                    if Path::new(&f).exists() && Path::new(&f).is_dir() {
-                        for entry in WalkDir::new(f) {
-                            let entry = entry.unwrap();
-                            if Path::is_dir(entry.path()) {
-                                continue;
-                            }
-                            correct_files_num += 1;
-                        }
-                    } else if Path::new(&f).exists() {
-                        correct_files_num += 1;
-                    }
-                }
                 // Add row with job info
-                table.add_row(row![
-                    format!("{}", j.name.to_string()),
-                    format!("{}", j.id),
-                    format!("{}", j.aws_bucket.to_string()),
-                    format!("{}", j.aws_region.to_string()),
-                    format!("{}", correct_files_num),
-                    format!("{}", j.total_runs),
-                    format!("{}", correct_last_run.to_string()),
-                    format!("{:?}", j.last_status),
-                ]);
+                table.add_row(Row::new(vec![
+                    Cell::new(&format!("{}", j.name.to_string())),
+                    Cell::new(&format!("{}", j.id)),
+                    Cell::new(&format!("{}", j.aws_bucket.to_string())),
+                    Cell::new(&format!("{}", j.aws_region.to_string())),
+                    Cell::new(&format!("{}", j.files_amt)),
+                    Cell::new(&format!("{}", j.total_runs)),
+                    Cell::new(&format!("{}", correct_last_run.to_string())),
+                    Cell::new(&format!("{}", j.last_status)),
+                ]));
             }
             // Print the job table
             table.printstd();

@@ -46,6 +46,8 @@ impl JobPool {
             });
     }
 
+    // TODO: come back
+    #[allow(dead_code)]
     pub fn kill_worker(&mut self, worker_id: usize) {
         // Loop through workers and terminate their thread
         for worker in &mut self.workers {
