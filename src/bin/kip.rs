@@ -1,22 +1,14 @@
-mod args;
-mod conf;
-mod crypto;
-mod job;
-mod job_pool;
-
 // Kip imports
-use crate::args::{Opt, Subcommands};
-use crate::conf::KipConf;
-use crate::job::Job;
-use crate::job_pool::JobPool;
-
+use kip::args::{Opt, Subcommands};
+use kip::conf::KipConf;
+use kip::job::Job;
+//use kip::job_pool::JobPool;
 // External imports
 use colored::*;
 use dialoguer::Confirm;
 use prettytable::{Cell, Row, Table};
 use std::io::prelude::*;
-use std::path::Path;
-use std::process;
+use std::path::{Path, PathBuf};
 use structopt::StructOpt;
 
 #[tokio::main]
@@ -24,7 +16,7 @@ async fn main() {
     // Writes default config if missing
     match KipConf::new() {
         Ok(_) => (),
-        Err(e) => eprintln!(
+        Err(e) => terminate!(
             "{} failed to create new kip configuration: {}",
             "[ERR]".red(),
             e
@@ -32,7 +24,7 @@ async fn main() {
     };
 
     // Create job pool for backup jobs
-    let job_pool = JobPool::new(5);
+    // let job_pool = JobPool::new(3);
 
     // Get subcommands and args
     let args: Opt = Opt::from_args();
@@ -44,15 +36,13 @@ async fn main() {
         Subcommands::Init { job } => {
             // Get config
             let mut cfg = KipConf::get().unwrap_or_else(|e| {
-                eprintln!("{} failed to get kip configuration: {}.", "[ERR]".red(), e);
-                process::exit(1);
+                terminate!("{} failed to get kip configuration: {}.", "[ERR]".red(), e);
             });
             // Ensure that job does not already exist with
             // the provided name.
             for (j, _) in cfg.jobs.iter() {
                 if j == &job {
-                    eprintln!("{} job '{}' already exists.", "[ERR]".red(), job);
-                    process::exit(1);
+                    terminate!("{} job '{}' already exists.", "[ERR]".red(), job);
                 }
             }
             // Get region and bucket name from user input
@@ -82,7 +72,7 @@ async fn main() {
             match cfg.save() {
                 Ok(_) => println!("{} job '{}' successfully created.", "[OK]".green(), job),
                 Err(e) => eprintln!("{} failed to save kip configuration: {}", "[ERR]".red(), e),
-            };
+            }
         }
 
         // TODO: fix all the for loops in add. I don't like them
@@ -91,33 +81,29 @@ async fn main() {
             // Check if file or directory exists
             for f in &file_path {
                 if !Path::new(&f).exists() {
-                    eprintln!("{} '{}' doesn't exist.", "[ERR]".red(), f);
-                    process::exit(1);
+                    terminate!("{} '{}' doesn't exist.", "[ERR]".red(), f);
                 }
             }
             // Get config
             let mut cfg = KipConf::get().unwrap_or_else(|e| {
-                eprintln!("{} failed to get kip configuration: {}.", "[ERR]".red(), e);
-                process::exit(1);
+                terminate!("{} failed to get kip configuration: {}.", "[ERR]".red(), e);
             });
             // Get job from argument provided
             let mut j = cfg.jobs.get_mut(&job).unwrap_or_else(|| {
-                eprintln!("{} job '{}' doesn't exist.", "[ERR]".red(), &job);
-                process::exit(1);
+                terminate!("{} job '{}' doesn't exist.", "[ERR]".red(), &job);
             });
             // Check if files already exist on job
             // to avoid duplication.
             for jf in &j.files {
                 for f in &file_path {
-                    if jf == f {
-                        eprintln!("{} file(s) already exist on job '{}'.", "[ERR]".red(), &job);
-                        process::exit(1);
+                    if &jf.display().to_string() == f {
+                        terminate!("{} file(s) already exist on job '{}'.", "[ERR]".red(), &job);
                     }
                 }
             }
             // Push new files to job
             for f in file_path {
-                j.files.push(f);
+                j.files.push(PathBuf::from(f));
             }
             // Get new files amount for job
             j.files_amt = j.get_files_amt();
@@ -136,13 +122,11 @@ async fn main() {
         Subcommands::Remove { job, file_path } => {
             // Get config
             let mut cfg = KipConf::get().unwrap_or_else(|e| {
-                eprintln!("{} failed to get kip configuration: {}.", "[ERR]".red(), e);
-                process::exit(1);
+                terminate!("{} failed to get kip configuration: {}.", "[ERR]".red(), e);
             });
             // Get job from argument provided
             let j = cfg.jobs.get_mut(&job).unwrap_or_else(|| {
-                eprintln!("{} job '{}' doesn't exist.", "[ERR]".red(), &job);
-                process::exit(1);
+                terminate!("{} job '{}' doesn't exist.", "[ERR]".red(), &job);
             });
             // Confirm removal
             if !Confirm::new()
@@ -150,23 +134,29 @@ async fn main() {
                 .interact()
                 .unwrap_or(false)
             {
-                process::exit(0);
+                std::process::exit(0);
             }
             // If -f flag was provided or not
             match file_path {
                 // -f was provided, delete files from job
-                Some(file) => {
-                    for f in file {
-                        if j.files.contains(&f) {
+                Some(files) => {
+                    for f in files {
+                        if j.files.contains(&PathBuf::from(&f)) {
                             // Retain all elements != files_path argument provided
-                            j.files.retain(|i| i != &f);
+                            j.files.retain(|i| i != &PathBuf::from(&f));
                             // Get new files amount for job
                             j.files_amt = j.get_files_amt();
                         } else {
-                            eprintln!("{} job {} does not contain '{}'.", "[err]".red(), j.name, f,);
-                            process::exit(1);
+                            terminate!(
+                                "{} job {} does not contain '{}'.",
+                                "[ERR]".red(),
+                                j.name,
+                                f,
+                            );
                         };
                     }
+                    // Update files amt for job
+                    j.files_amt = j.get_files_amt();
                     // Save changes to config file
                     match cfg.save() {
                         Ok(_) => println!(
@@ -199,8 +189,7 @@ async fn main() {
         Subcommands::Push { job, secret } => {
             // Get config
             let mut cfg = KipConf::get().unwrap_or_else(|e| {
-                eprintln!("{} failed to get kip configuration: {}.", "[ERR]".red(), e);
-                process::exit(1);
+                terminate!("{} failed to get kip configuration: {}.", "[ERR]".red(), e);
             });
             // Prompt user for s3 info if nil. Probably used
             // regex later but I don't want to right now.
@@ -208,20 +197,18 @@ async fn main() {
                 cfg.prompt_s3_keys();
             };
             // Get job from argument provided
-            let mut j = match cfg.jobs.get_mut(&job) {
-                Some(j) => j.clone(),
-                None => {
-                    eprintln!("{} job '{}' doesn't exist.", "[ERR]".red(), &job);
-                    process::exit(1);
-                }
-            };
+            let j = cfg.jobs.get_mut(&job).unwrap_or_else(|| {
+                terminate!("{} job '{}' doesn't exist.", "[ERR]".red(), &job);
+            });
             // Get new files amount for job
             j.files_amt = j.get_files_amt();
             // Upload all files in a seperate thread
-            // TODO: Propagate and bubble errors through upload
             let bkt_name = j.aws_bucket.clone();
             //job_pool.execute(move || {
-            match j.upload(cfg.clone(), &secret).await {
+            match j
+                .run_upload(&secret, &cfg.s3_access_key, &cfg.s3_secret_key)
+                .await
+            {
                 Ok(_) => {
                     println!(
                         "{} job '{}' uploaded successfully to '{}'.",
@@ -237,7 +224,12 @@ async fn main() {
                     &bkt_name,
                     e
                 ),
-            };
+            }
+            // Save changes to config file
+            match cfg.save() {
+                Ok(_) => (),
+                Err(e) => eprintln!("{} failed to save kip configuration: {}", "[ERR]".red(), e),
+            }
             //});
         }
 
@@ -249,8 +241,7 @@ async fn main() {
         } => {
             // Get config
             let mut cfg = KipConf::get().unwrap_or_else(|e| {
-                eprintln!("{} failed to get kip configuration: {}.", "[ERR]".red(), e);
-                process::exit(1);
+                terminate!("{} failed to get kip configuration: {}.", "[ERR]".red(), e);
             });
             // Prompt user for s3 info if nil. Probably used
             // regex later but I don't want to right now.
@@ -258,17 +249,13 @@ async fn main() {
                 cfg.prompt_s3_keys();
             };
             // Get job from argument provided
-            let j = match cfg.jobs.get_mut(&job) {
-                Some(j) => j.clone(),
-                None => {
-                    eprintln!("{} job '{}' doesn't exist.", "[ERR]".red(), &job);
-                    process::exit(1);
-                }
-            };
+            let j = cfg.jobs.get_mut(&job).unwrap_or_else(|| {
+                terminate!("{} job '{}' doesn't exist.", "[ERR]".red(), &job);
+            });
             // Only one restore can be happening at a time
             //job_pool.execute(move || {
             match j
-                .restore(
+                .run_restore(
                     &secret,
                     &cfg.s3_access_key,
                     &cfg.s3_secret_key,
@@ -295,8 +282,7 @@ async fn main() {
         Subcommands::Abort { job } => {
             // Get config
             let mut cfg = KipConf::get().unwrap_or_else(|e| {
-                eprintln!("{} failed to get kip configuration: {}.", "[ERR]".red(), e);
-                process::exit(1);
+                terminate!("{} failed to get kip configuration: {}.", "[ERR]".red(), e);
             });
             // Prompt user for s3 info if nil. Probably used
             // regex later but I don't want to right now.
@@ -307,8 +293,7 @@ async fn main() {
             let j = match cfg.jobs.get_mut(&job) {
                 Some(j) => j.clone(),
                 None => {
-                    eprintln!("{} job '{}' does not exist.", "[ERR]".red(), &job);
-                    process::exit(1);
+                    terminate!("{} job '{}' does not exist.", "[ERR]".red(), &job);
                 }
             };
             // Confirm removal
@@ -317,7 +302,7 @@ async fn main() {
                 .interact()
                 .unwrap_or(false)
             {
-                process::exit(0);
+                std::process::exit(0);
             }
             // Abort job
             //job_pool.execute(move || {
@@ -334,13 +319,11 @@ async fn main() {
         Subcommands::Status { job } => {
             // Get config
             let cfg = KipConf::get().unwrap_or_else(|e| {
-                eprintln!("{} failed to get kip configuration: {}.", "[ERR]".red(), e);
-                process::exit(1);
+                terminate!("{} failed to get kip configuration: {}.", "[ERR]".red(), e);
             });
             // Get job from argument provided
             let j = cfg.jobs.get(&job).unwrap_or_else(|| {
-                eprintln!("{} job '{}' doesn't exist.", "[ERR]".red(), &job);
-                process::exit(1);
+                terminate!("{} job '{}' doesn't exist.", "[ERR]".red(), &job);
             });
             println!("{:#?}", j);
         }
@@ -349,8 +332,7 @@ async fn main() {
         Subcommands::List {} => {
             // Get config
             let cfg = KipConf::get().unwrap_or_else(|e| {
-                eprintln!("{} failed to get kip configuration: {}.", "[ERR]".red(), e);
-                process::exit(1);
+                terminate!("{} failed to get kip configuration: {}.", "[ERR]".red(), e);
             });
             // Create the table
             let mut table = Table::new();
@@ -390,4 +372,16 @@ async fn main() {
             table.printstd();
         }
     }
+}
+
+// A simple macro to remove some boilerplate
+// on error or exiting kip.
+// Can extend to inclue custom exit codes
+#[macro_export]
+macro_rules! terminate {
+    ($($arg:tt)*) => {{
+        let res = std::fmt::format(format_args!($($arg)*));
+        eprintln!("{}", res);
+        std::process::exit(1);
+    }}
 }

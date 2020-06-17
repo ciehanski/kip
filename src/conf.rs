@@ -20,19 +20,6 @@ pub struct KipConf {
 }
 
 impl KipConf {
-    pub fn get() -> Result<KipConf, Error> {
-        let file = read(KIP_CONF)?;
-        let kc: KipConf = serde_json::from_slice(&file)?;
-        Ok(kc)
-    }
-
-    pub fn save(self) -> Result<(), Error> {
-        let mut file = OpenOptions::new().write(true).open(KIP_CONF)?;
-        let json_conf = serde_json::to_string_pretty(&self)?;
-        file.write_all(json_conf.as_bytes())?;
-        Ok(())
-    }
-
     pub fn new() -> Result<(), Error> {
         if Path::new(KIP_CONF).exists() {
             // If kip configuration already exists, just return.
@@ -57,6 +44,19 @@ impl KipConf {
         Ok(())
     }
 
+    pub fn get() -> Result<KipConf, Error> {
+        let file = read(KIP_CONF)?;
+        let kc: KipConf = serde_json::from_slice(&file)?;
+        Ok(kc)
+    }
+
+    pub fn save(self) -> Result<(), Error> {
+        let mut file = OpenOptions::new().write(true).open(KIP_CONF)?;
+        let json_conf = serde_json::to_string_pretty(&self)?;
+        file.write_all(json_conf.as_bytes())?;
+        Ok(())
+    }
+
     pub fn prompt_s3_keys(&mut self) {
         // If user has not provided S3 credentials or this is
         // their first time using kip
@@ -77,13 +77,16 @@ impl KipConf {
         self.s3_secret_key = sec_key;
     }
 
-    // pub fn poll_jobs(&self) {
-    //     thread::spawn(move || loop {
-    //         thread::sleep(Duration::new(self.backup_interval, 0));
-    //         for j in self.jobs {
-    //             j.upload();
+    // pub async fn poll_jobs(&self) {
+    //     loop {
+    //         thread::sleep(Duration::new(self.backup_interval as u64, 0));
+    //         for (_, j) in self.jobs.iter() {
+    //             match &*j.upload(self.clone(), "").await {
+    //                 Ok(_) => (),
+    //                 Err(_) => (),
+    //             }
     //         }
-    //     });
+    //     }
     // }
 }
 
@@ -99,15 +102,15 @@ mod tests {
         };
     }
 
-    // #[test]
-    // fn test_get() {
-    //     KipConf::new().unwrap();
-    //     let kc = match KipConf::get() {
-    //         Ok(c) => c,
-    //         Err(e) => panic!(e),
-    //     };
-    //     if kc.backup_interval != 60 {
-    //         panic!();
-    //     }
-    // }
+    #[test]
+    fn test_get() {
+        KipConf::new().unwrap();
+        let kc = match KipConf::get() {
+            Ok(c) => c,
+            Err(e) => panic!(e),
+        };
+        if kc.backup_interval != 60 {
+            panic!();
+        }
+    }
 }

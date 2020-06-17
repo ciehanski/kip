@@ -22,8 +22,13 @@ tokio = "0.2.21"
 futures = "0.3.5"
 colored = "1.9.3"
 prettytable-rs = "0.8.0"
+# fastcdc = "1.0.3"
 # directories = "2.0.2"
+
+[lib]
+name = "kip"
+path = "src/lib.rs"
 
 [[bin]]
 name = "kip"
-path = "src/main.rs"
+path = "src/bin/kip.rs"

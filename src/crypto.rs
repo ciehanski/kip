@@ -2,15 +2,12 @@ use aead::{generic_array::GenericArray, Aead, NewAead};
 use chacha20poly1305::XChaCha20Poly1305;
 use rand::rngs::OsRng;
 use rand::Rng;
+use sha3::digest::generic_array::typenum::U32;
 use sha3::{Digest, Sha3_256};
 
 pub fn encrypt(plaintext: &[u8], secret: &str) -> Result<Vec<u8>, aead::Error> {
-    // Create a SHA3-256 object
-    let mut hasher = Sha3_256::new();
-    // Write password's bytes into hasher
-    hasher.update(secret.as_bytes());
     // SHA3-256 32-byte secret
-    let hashed_secret = hasher.finalize();
+    let hashed_secret = hash_secret(secret);
     let key = GenericArray::from_slice(&hashed_secret);
     // New XChaCha20Poly1305 from hashed_secret
     let aead = XChaCha20Poly1305::new(key);
@@ -20,25 +17,20 @@ pub fn encrypt(plaintext: &[u8], secret: &str) -> Result<Vec<u8>, aead::Error> {
     // Encrypt
     let mut ciphertext = aead.encrypt(nonce, plaintext.as_ref())?;
     // Embed nonce to end of ciphertext; needed for decryption
-    let mut nonce_vec = nonce_str.as_bytes().to_vec();
-    ciphertext.append(&mut nonce_vec);
+    ciphertext.append(&mut nonce_str.as_bytes().to_vec());
     // Ship it
     Ok(ciphertext)
 }
 
 pub fn decrypt(ciphertext: &[u8], secret: &str) -> Result<Vec<u8>, aead::Error> {
-    // Create a SHA3-256 object
-    let mut hasher = Sha3_256::new();
-    // Write password's bytes into hasher
-    hasher.update(secret.as_bytes());
     // SHA3-256 32-byte secret
-    let hashed_secret = hasher.finalize();
+    let hashed_secret = hash_secret(secret);
     let key = GenericArray::from_slice(&hashed_secret);
     // New XChaCha20Poly1305 from hashed_secret
     let aead = XChaCha20Poly1305::new(key);
     // Pop off nonce from ciphertext for decryption
     let (nonce_vec, cipher_vec) = extract_nonce(ciphertext);
-    // Generate nonce - 24-bytes; unique
+    // Generate generic array from popped off nonce
     let nonce = GenericArray::from_slice(&nonce_vec);
     // Decrypt
     let plaintext = aead.decrypt(nonce, cipher_vec.as_ref())?;
@@ -46,11 +38,19 @@ pub fn decrypt(ciphertext: &[u8], secret: &str) -> Result<Vec<u8>, aead::Error> 
     Ok(plaintext)
 }
 
+fn hash_secret(secret: &str) -> GenericArray<u8, U32> {
+    // Create a SHA3-256 digest
+    let mut hasher = Sha3_256::new();
+    // Write password's bytes into hasher
+    hasher.update(secret.as_bytes());
+    // Return SHA3-256 32-byte secret hash
+    hasher.finalize()
+}
+
 // Generates a 24-byte string of random numbers.
 fn generate_nonce() -> String {
-    // Loop 24 times to create 24-byte String
-    // of random numbers. Use OsRng to generate
-    // more "secure" random randomness.
+    // Loop 24 times to create 24-byte String of random numbers.
+    // Use OsRng to generate more "secure" random randomness.
     let mut nonce = String::new();
     for _ in 0..24 {
         let rn = OsRng.gen_range(0, 9);
@@ -78,14 +78,12 @@ fn extract_nonce(ciphertext: &[u8]) -> (Vec<u8>, Vec<u8>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{decrypt, encrypt, generate_nonce};
+    use super::*;
 
     #[test]
     fn test_generate_nonce() {
         let t = generate_nonce();
-        if t.len() != 24 {
-            panic!("nonce should be 24-bytes in length")
-        }
+        assert_eq!(t.len(), 24);
     }
 
     #[test]
