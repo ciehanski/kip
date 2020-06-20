@@ -203,18 +203,10 @@ impl Run {
         let output_folder = output_folder.unwrap_or_default();
         // For each object in the bucket, download it
         let mut counter: usize = 0;
-        'outer: for ob in bucket_objects {
-            // Confirm that the object in S3 contains the job's ID
-            if !ob
-                .key
-                .clone()
-                .expect("[ERR] unable to get file name from S3")
-                .contains(&job.id.to_string())
-            {
-                continue;
-            }
+        for fc in self.files_changed.iter() {
             // Check if S3 object is within this run's changed files
-            for fc in self.files_changed.iter() {
+            let mut path = String::from("");
+            for ob in bucket_objects.iter() {
                 // pop hash off from S3 path
                 let s3_path = ob
                     .key
@@ -224,20 +216,18 @@ impl Run {
                 let hash = fp.pop().expect("[ERR] failed to pop S3 path.");
                 let hs: Vec<_> = hash.split(".").collect();
                 if !fc.contains_key(hs[0]) {
-                    // continue outter loop
-                    println!("skipped");
-                    continue 'outer;
+                    // Not found :(
+                    continue;
                 } else {
-                    println!("{}", hs[0]);
+                    // Found! Download this chunk
+                    path.push_str(&ob.key.clone().unwrap());
                 }
             }
             // Increment file counter
             counter += 1;
             // Download file
             match s3_download(
-                &ob.key
-                    .clone()
-                    .expect("[ERR] unable to get file name from S3."),
+                &path,
                 &job.aws_bucket,
                 Job::parse_s3_region(job.aws_region.clone()),
                 secret,
@@ -251,9 +241,7 @@ impl Run {
                         Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                         job.name,
                         self.id,
-                        ob.key
-                            .expect("[ERR] unable to get file name from S3.")
-                            .green(),
+                        &path,
                         counter,
                         job.files_amt,
                     );
@@ -264,9 +252,7 @@ impl Run {
                         Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                         job.name,
                         self.id,
-                        ob.key
-                            .expect("[ERR] unable to get file name from S3.")
-                            .green(),
+                        &path,
                         e,
                         counter,
                         job.files_amt,

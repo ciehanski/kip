@@ -80,12 +80,6 @@ fn extract_nonce(ciphertext: &[u8]) -> (Vec<u8>, Vec<u8>) {
 mod tests {
     use super::*;
 
-    // #[test]
-    // fn test_hash_secret() {
-    //     let secret = hash_secret("hunter2");
-    //     let key = GenericArray::from_slice(&secret);
-    // }
-
     #[test]
     fn test_generate_nonce() {
         let t = generate_nonce();

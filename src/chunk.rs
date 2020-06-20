@@ -54,7 +54,7 @@ mod tests {
         let metadata = std::fs::metadata("/Users/Ryan/Documents/ciehanski.com/index.html").unwrap();
         let mut buffer = vec![0; metadata.len() as usize];
         f.read(&mut buffer).unwrap();
-        let chunk_hmap = chunk_file(&buffer);
+        let (chunk_hmap, _) = chunk_file(&buffer);
         assert_eq!(
             chunk_hmap[0].hash,
             "b2b09a9f4d09b6744568cdfb80d53a221fe3f8c232b03e9ebe343aefcab6b876".to_string()

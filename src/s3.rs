@@ -30,7 +30,7 @@ pub async fn s3_upload(
     // TODO: remove this yucky clone. Im sorry
     for mut chunk in chunked_file.clone() {
         // Get full path of chunked file (SHA256 hash)
-        let chunked_path = chunk_path(PathBuf::from(f).canonicalize()?, &chunk.hash);
+        let chunked_path = get_chunk_path(PathBuf::from(f).canonicalize()?, &chunk.hash);
         // Check S3 if this chunk aleady exists
         let s3_objs = list_s3_bucket(&aws_bucket, aws_region.clone()).await?;
         let mut cont = false;
@@ -85,7 +85,7 @@ pub async fn s3_upload(
     Ok(chunks)
 }
 
-fn chunk_path(path: PathBuf, new_path: &str) -> PathBuf {
+fn get_chunk_path(path: PathBuf, new_path: &str) -> PathBuf {
     // Split canonicalized path by folder seperator
     let path_str = path.as_path().display().to_string();
     let mut fp: Vec<_> = path_str.split("/").collect();
