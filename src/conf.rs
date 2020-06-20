@@ -77,17 +77,22 @@ impl KipConf {
         self.s3_secret_key = sec_key;
     }
 
-    // pub async fn poll_jobs(&self) {
-    //     loop {
-    //         thread::sleep(Duration::new(self.backup_interval as u64, 0));
-    //         for (_, j) in self.jobs.iter() {
-    //             match &*j.upload(self.clone(), "").await {
-    //                 Ok(_) => (),
-    //                 Err(_) => (),
-    //             }
-    //         }
-    //     }
-    // }
+    pub async fn poll_backup_jobs(self, _secret: &str) {
+        // for (_, ref mut j) in self.jobs {
+        //     match j
+        //         .run_upload(secret, &self.s3_access_key, &self.s3_secret_key)
+        //         .await
+        //     {
+        //         Ok(_) => {
+        //             // Print all logs from run
+        //             for l in r.logs.iter() {
+        //                 println!("{}", l);
+        //             }
+        //         }
+        //         Err(_) => (),
+        //     }
+        // }
+    }
 }
 
 #[cfg(test)]
@@ -109,8 +114,26 @@ mod tests {
             Ok(c) => c,
             Err(e) => panic!(e),
         };
-        if kc.backup_interval != 60 {
+        if kc.backup_interval != 5 {
             panic!();
         }
+    }
+
+    #[test]
+    fn test_save() {
+        KipConf::new().unwrap();
+        let mut kc = KipConf::get().unwrap();
+        kc.backup_interval = 5;
+        match kc.save() {
+            Ok(_) => (),
+            Err(e) => panic!(e),
+        };
+        // Revert change to backup interval
+        let mut kc = KipConf::get().unwrap();
+        kc.backup_interval = 60;
+        match kc.save() {
+            Ok(_) => (),
+            Err(e) => panic!(e),
+        };
     }
 }

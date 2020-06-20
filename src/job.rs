@@ -1,6 +1,6 @@
 use crate::run::Run;
 use chrono::prelude::*;
-// use colored::*;
+use colored::*;
 use rusoto_core::Region;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -100,7 +100,7 @@ impl Job {
         for f in self.files.iter() {
             if Path::new(&f).exists() && Path::new(&f).is_dir() {
                 for entry in WalkDir::new(f) {
-                    let entry = entry.unwrap();
+                    let entry = entry.expect("[ERR] unable to get directory.");
                     if Path::is_dir(entry.path()) {
                         continue;
                     }
@@ -126,22 +126,49 @@ impl Job {
         // Create new run
         let mut r = Run::new(self.total_runs + 1);
         // Set job metadata
-        self.last_run = Utc::now();
-        self.total_runs += 1;
-        if self.first_run.format("%Y-%m-%d %H:%M:%S").to_string() == "1970-01-01 00:00:00" {
-            self.first_run = Utc::now();
-        }
         self.last_status = KipStatus::IN_PROGRESS;
         // Tell the run to start uploading
-        r.upload(&self, secret).await?;
-        // Print all logs from run
-        for l in r.logs.iter() {
-            println!("{}", l);
-        }
+        match r.upload(&self, secret).await {
+            Ok(_) => (),
+            Err(e) => {
+                self.last_status = KipStatus::ERR;
+                // Add run to job
+                self.runs.insert(r.id, r);
+                self.total_runs += 1;
+                self.last_run = Utc::now();
+                if self.first_run.format("%Y-%m-%d %H:%M:%S").to_string() == "1970-01-01 00:00:00" {
+                    self.first_run = Utc::now();
+                }
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "{} failed to restore '{}': {}.",
+                        "[ERR]".red(),
+                        &self.name,
+                        e
+                    ),
+                )));
+            }
+        };
         // Reset AWS env env to nil
         env::set_var("AWS_ACCESS_KEY_ID", "");
         env::set_var("AWS_SECRET_ACCESS_KEY", "");
         env::set_var("AWS_REGION", "");
+        // Print all logs from run
+        if !r.logs.is_empty() {
+            for l in r.logs.iter() {
+                println!("{}", l);
+            }
+            // Add run to job only if anything was uploaded
+            self.runs.insert(r.id, r.clone());
+            self.total_runs += 1;
+            self.last_run = Utc::now();
+            if self.first_run.format("%Y-%m-%d %H:%M:%S").to_string() == "1970-01-01 00:00:00" {
+                self.first_run = Utc::now();
+            }
+        } else {
+            println!("[INFO] no file changes detected.");
+        }
         // Set job status
         if r.status == KipStatus::WARN {
             self.last_status = KipStatus::WARN;
@@ -150,14 +177,13 @@ impl Job {
         } else {
             self.last_status = KipStatus::OK;
         }
-        // Add run to job
-        self.runs.insert(r.id, r);
         // Success
         Ok(())
     }
 
     pub async fn run_restore(
-        &mut self,
+        &self,
+        run: usize,
         secret: &str,
         aws_access: &str,
         aws_secret: &str,
@@ -167,35 +193,40 @@ impl Job {
         env::set_var("AWS_ACCESS_KEY_ID", aws_access);
         env::set_var("AWS_SECRET_ACCESS_KEY", aws_secret);
         env::set_var("AWS_REGION", &self.aws_region);
-        // Create new run
-        let mut r = Run::new(self.total_runs + 1);
-        // Set job metadata
-        self.last_run = Utc::now();
-        self.total_runs += 1;
-        if self.first_run.format("%Y-%m-%d %H:%M:%S").to_string() == "1970-01-01 00:00:00" {
-            self.first_run = Utc::now();
-        }
-        self.last_status = KipStatus::IN_PROGRESS;
+        // Get run from job
+        let r = match self.runs.get(&run) {
+            Some(run) => run,
+            None => {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "{} failed to restore '{}': couldn't find run {}.",
+                        "[ERR]".red(),
+                        &self.name,
+                        run
+                    ),
+                )));
+            }
+        };
         // Tell the run to start uploading
-        r.restore(&self, secret, output_folder).await?;
-        // Print all logs from run
-        for l in r.logs.iter() {
-            println!("{}", l);
-        }
+        match r.restore(&self, secret, output_folder).await {
+            Ok(_) => (),
+            Err(e) => {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "{} failed to restore '{}': {}.",
+                        "[ERR]".red(),
+                        &self.name,
+                        e
+                    ),
+                )));
+            }
+        };
         // Reset AWS env env to nil
         env::set_var("AWS_ACCESS_KEY_ID", "");
         env::set_var("AWS_SECRET_ACCESS_KEY", "");
         env::set_var("AWS_REGION", "");
-        // Set job status
-        if r.status == KipStatus::WARN {
-            self.last_status = KipStatus::WARN;
-        } else if r.status == KipStatus::ERR {
-            self.last_status = KipStatus::ERR;
-        } else {
-            self.last_status = KipStatus::OK;
-        }
-        // Add run to job
-        self.runs.insert(r.id, r);
         // Success
         Ok(())
     }

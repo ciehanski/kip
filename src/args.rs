@@ -61,6 +61,9 @@ pub enum Subcommands {
         /// Name of the job you want to restore from
         job: String,
         ///
+        #[structopt(short = "r", long = "run")]
+        run: usize,
+        ///
         #[structopt(short = "s", long = "secret")]
         secret: String,
         ///
@@ -87,5 +90,13 @@ pub enum Subcommands {
     /// Lists all jobs and their configurations
     ///
     #[structopt(name = "list", alias = "ls")]
-    List {},
+    List {
+        /// Name of the job you want to get status from
+        ///
+        job: Option<String>,
+        /// Name of the run you want to get status from
+        ///
+        #[structopt(short = "r", long = "run")]
+        run: Option<usize>,
+    },
 }

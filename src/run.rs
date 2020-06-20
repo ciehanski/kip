@@ -1,8 +1,10 @@
+use crate::chunk::FileChunk;
 use crate::job::{Job, KipStatus};
 use crate::s3::{list_s3_bucket, s3_download, s3_upload};
 use chrono::prelude::*;
 use colored::*;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::error::Error;
 use std::fs::metadata;
 use walkdir::WalkDir;
@@ -11,10 +13,10 @@ use walkdir::WalkDir;
 pub struct Run {
     pub id: usize,
     pub started: DateTime<Utc>,
-    pub time_elapsed: u64,
+    pub time_elapsed: String,
     pub finished: DateTime<Utc>,
     pub bytes_uploaded: usize,
-    pub files_uploaded: usize,
+    pub files_changed: Vec<HashMap<String, FileChunk>>,
     pub status: KipStatus,
     pub logs: Vec<String>,
 }
@@ -24,10 +26,10 @@ impl Run {
         Run {
             id,
             started: Utc.ymd(1970, 1, 1).and_hms(0, 0, 0),
-            time_elapsed: 0,
+            time_elapsed: String::from(""),
             finished: Utc.ymd(1970, 1, 1).and_hms(0, 0, 0),
             bytes_uploaded: 0,
-            files_uploaded: 0,
+            files_changed: Vec::new(),
             status: KipStatus::NEVER_RUN,
             logs: Vec::<String>::new(),
         }
@@ -35,20 +37,19 @@ impl Run {
 
     pub async fn upload(&mut self, job: &Job, secret: &str) -> Result<(), Box<dyn Error>> {
         // Set run metadata
-        // TODO: build timer for upload process
         self.started = Utc::now();
         self.status = KipStatus::IN_PROGRESS;
         // TODO: S3 by default will allow 10 concurrent requests
         // For each file or dir, upload it
         let mut counter: usize = 0;
-        // TODO: testing
+        let mut bytes_uploaded: usize = 0;
         for f in job.files.iter() {
             // Check if file or directory exists
             if !f.exists() {
                 self.status = KipStatus::WARN;
                 self.logs.push(format!(
-                    "{} | {}-{} ⇉ '{}' can not be found. ({}/{})",
-                    Utc::now(),
+                    "[{}] {}-{} ⇉ '{}' can not be found. ({}/{})",
+                    Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                     job.name,
                     self.id,
                     f.display().to_string().red(),
@@ -60,8 +61,6 @@ impl Run {
             // Check if f is file or directory
             let fmd = metadata(f)?;
             if fmd.is_file() {
-                // Increase file counter
-                counter += 1;
                 // Upload
                 match s3_upload(
                     &f.display().to_string(),
@@ -73,24 +72,34 @@ impl Run {
                 )
                 .await
                 {
-                    Ok(_) => {
+                    Ok(chunked_file) => {
                         self.status = KipStatus::OK;
-                        self.logs.push(format!(
-                            "{} | {}-{} ⇉ '{}' uploaded successfully to '{}'. ({}/{})",
-                            Utc::now(),
-                            job.name,
-                            self.id,
-                            f.display().to_string().green(),
-                            job.aws_bucket.clone(),
-                            counter,
-                            job.files_amt,
-                        ));
+                        // Confirm the chunked file is not empty
+                        if !chunked_file.is_empty() {
+                            // Increase file counter
+                            counter += 1;
+                            // Increase bytes uploaded for this run
+                            bytes_uploaded += fmd.len() as usize;
+                            // Push chunked file onto run's changed files
+                            self.files_changed.push(chunked_file);
+                            // Push logs to run
+                            self.logs.push(format!(
+                                "[{}] {}-{} ⇉ '{}' uploaded successfully to '{}'. ({}/{})",
+                                Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                                job.name,
+                                self.id,
+                                f.display().to_string().green(),
+                                job.aws_bucket.clone(),
+                                counter,
+                                job.files_amt,
+                            ));
+                        }
                     }
                     Err(e) => {
                         self.status = KipStatus::ERR;
                         self.logs.push(format!(
-                            "{} | {}-{} ⇉ '{}' upload failed: {}. ({}/{})",
-                            Utc::now(),
+                            "[{}] {}-{} ⇉ '{}' upload failed: {}. ({}/{})",
+                            Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                             job.name,
                             self.id,
                             f.display().to_string().red(),
@@ -112,8 +121,6 @@ impl Run {
                     if fmd.is_dir() {
                         continue;
                     }
-                    // Increase file counter
-                    counter += 1;
                     // Upload
                     match s3_upload(
                         &entry.path().display().to_string(),
@@ -125,24 +132,34 @@ impl Run {
                     )
                     .await
                     {
-                        Ok(_) => {
+                        Ok(chunked_file) => {
                             self.status = KipStatus::OK;
-                            self.logs.push(format!(
-                                "{} | {}-{} ⇉ '{}' uploaded successfully to '{}'. ({}/{})",
-                                Utc::now(),
-                                job.name,
-                                self.id,
-                                entry.path().display().to_string().green(),
-                                job.aws_bucket.clone(),
-                                counter,
-                                job.files_amt,
-                            ));
+                            // Confirm the chunked file is not empty
+                            if !chunked_file.is_empty() {
+                                // Increase file counter
+                                counter += 1;
+                                // Increase bytes uploaded for this run
+                                bytes_uploaded += fmd.len() as usize;
+                                // Push chunked file onto run's changed files
+                                self.files_changed.push(chunked_file);
+                                // Push logs
+                                self.logs.push(format!(
+                                    "[{}] {}-{} ⇉ '{}' uploaded successfully to '{}'. ({}/{})",
+                                    Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                                    job.name,
+                                    self.id,
+                                    entry.path().display().to_string().green(),
+                                    job.aws_bucket.clone(),
+                                    counter,
+                                    job.files_amt,
+                                ));
+                            }
                         }
                         Err(e) => {
                             self.status = KipStatus::ERR;
                             self.logs.push(format!(
-                                "{} | {}-{} ⇉ '{}' upload failed: {}. ({}/{})",
-                                Utc::now(),
+                                "[{}] {}-{} ⇉ '{}' upload failed: {}. ({}/{})",
+                                Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                                 job.name,
                                 self.id,
                                 entry.path().display().to_string().red(),
@@ -156,22 +173,26 @@ impl Run {
             }
         }
         // Set run metadata
-        self.files_uploaded = counter;
         self.finished = Utc::now();
+        let dur = self.finished.signed_duration_since(self.started);
+        self.time_elapsed = format!(
+            "{}d {}h {}m {}s",
+            dur.num_days(),
+            dur.num_hours(),
+            dur.num_minutes(),
+            dur.num_seconds(),
+        );
+        self.bytes_uploaded = bytes_uploaded;
         // Done
         Ok(())
     }
 
     pub async fn restore(
-        &mut self,
+        &self,
         job: &Job,
         secret: &str,
         output_folder: Option<String>,
     ) -> Result<(), Box<dyn Error>> {
-        // Set run metadata
-        // TODO: build timer for upload process
-        self.started = Utc::now();
-        self.status = KipStatus::IN_PROGRESS;
         // Get all bucket contents
         let bucket_objects = list_s3_bucket(
             &job.aws_bucket,
@@ -182,7 +203,34 @@ impl Run {
         let output_folder = output_folder.unwrap_or_default();
         // For each object in the bucket, download it
         let mut counter: usize = 0;
-        for ob in bucket_objects {
+        'outer: for ob in bucket_objects {
+            // Confirm that the object in S3 contains the job's ID
+            if !ob
+                .key
+                .clone()
+                .expect("[ERR] unable to get file name from S3")
+                .contains(&job.id.to_string())
+            {
+                continue;
+            }
+            // Check if S3 object is within this run's changed files
+            for fc in self.files_changed.iter() {
+                // pop hash off from S3 path
+                let s3_path = ob
+                    .key
+                    .clone()
+                    .expect("[ERR] unable to get file name from S3");
+                let mut fp: Vec<_> = s3_path.split("/").collect();
+                let hash = fp.pop().expect("[ERR] failed to pop S3 path.");
+                let hs: Vec<_> = hash.split(".").collect();
+                if !fc.contains_key(hs[0]) {
+                    // continue outter loop
+                    println!("skipped");
+                    continue 'outer;
+                } else {
+                    println!("{}", hs[0]);
+                }
+            }
             // Increment file counter
             counter += 1;
             // Download file
@@ -198,20 +246,24 @@ impl Run {
             .await
             {
                 Ok(_) => {
-                    self.status = KipStatus::OK;
                     println!(
-                        "{} ⇉ '{}' restored successfully. ({}/{})",
+                        "[{}] {}-{} ⇉ '{}' restored successfully. ({}/{})",
+                        Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                         job.name,
-                        ob.key.unwrap().green(),
+                        self.id,
+                        ob.key
+                            .expect("[ERR] unable to get file name from S3.")
+                            .green(),
                         counter,
                         job.files_amt,
                     );
                 }
                 Err(e) => {
-                    self.status = KipStatus::ERR;
                     eprintln!(
-                        "{} ⇉ '{}' restore failed: {}. ({}/{})",
+                        "[{}] {}-{} ⇉ '{}' restore failed: {}. ({}/{})",
+                        Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                         job.name,
+                        self.id,
                         ob.key
                             .expect("[ERR] unable to get file name from S3.")
                             .green(),
@@ -222,9 +274,6 @@ impl Run {
                 }
             }
         }
-        // Set run metadata
-        self.files_uploaded = counter;
-        self.finished = Utc::now();
         // Success
         Ok(())
     }

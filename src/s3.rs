@@ -1,12 +1,14 @@
+use crate::chunk::chunk_file;
+use crate::chunk::FileChunk;
 use crate::crypto::{decrypt, encrypt};
 use colored::*;
 use rusoto_core::Region;
 use rusoto_s3::{
     GetObjectRequest, ListObjectsV2Request, Object, PutObjectRequest, S3Client, StreamingBody, S3,
 };
-use sha3::{Digest, Sha3_256};
+// use sha3::{Digest, Sha3_256};
+use std::collections::HashMap;
 use std::error::Error;
-use std::fs;
 use std::fs::{read, File};
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
@@ -20,89 +22,79 @@ pub async fn s3_upload(
     aws_bucket: String,
     aws_region: Region,
     secret: &str,
-) -> Result<(), Box<dyn Error>> {
-    // Encrypt file
-    let encrypted = match encrypt(&read(f)?, secret) {
-        Ok(ef) => ef,
-        Err(e) => {
-            return Err(Box::new(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("{} failed to encrypt file: {:?}.", "[ERR]".red(), e),
-            )));
+) -> Result<HashMap<String, FileChunk>, Box<dyn Error>> {
+    // Chunk the file
+    let (chunked_file, chunk_bytes) = chunk_file(&read(f)?);
+    // Upload each chunk
+    let mut chunks = HashMap::new();
+    // TODO: remove this yucky clone. Im sorry
+    for mut chunk in chunked_file.clone() {
+        // Get full path of chunked file (SHA256 hash)
+        let chunked_path = chunk_path(PathBuf::from(f).canonicalize()?, &chunk.hash);
+        // Check S3 if this chunk aleady exists
+        let s3_objs = list_s3_bucket(&aws_bucket, aws_region.clone()).await?;
+        let mut cont = false;
+        for obj in s3_objs {
+            if obj
+                .key
+                .clone()
+                .expect("[ERR] unable to get S3 object key.")
+                .contains(&chunked_path.as_path().display().to_string())
+            {
+                cont = true;
+            }
         }
-    };
-    // Upload file
-    // Get full path of file
-    let full_path = fs::canonicalize(PathBuf::from(f))?;
-    // let hashed_path = hash_folder(full_path)?;
-    // Create S3 client with specifc region
-    let s3_client = S3Client::new(aws_region);
-    // PUT!
-    s3_client
-        .put_object(PutObjectRequest {
-            bucket: aws_bucket.clone(),
-            key: format!("{}{}", job_id, full_path.as_path().display().to_string()),
-            content_length: Some(fmd_len as i64),
-            body: Some(StreamingBody::from(encrypted)),
-            ..Default::default()
-        })
-        .await?;
+        if cont {
+            continue;
+        };
+        // Encrypt chunk
+        let bytes_index = chunked_file
+            .iter()
+            .position(|r| r == &chunk)
+            .expect("[ERR] unable to get chunk position.");
+        let encrypted = match encrypt(&chunk_bytes[bytes_index], secret) {
+            Ok(ef) => ef,
+            Err(e) => {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("{} failed to encrypt file: {:?}.", "[ERR]".red(), e),
+                )));
+            }
+        };
+        // Create S3 client with specifc region
+        let s3_client = S3Client::new(aws_region.clone());
+        // PUT!
+        s3_client
+            .put_object(PutObjectRequest {
+                bucket: aws_bucket.clone(),
+                key: format!(
+                    "{}/{}.chunk",
+                    job_id,
+                    chunked_path.as_path().display().to_string()
+                ),
+                content_length: Some(fmd_len as i64),
+                body: Some(StreamingBody::from(encrypted)),
+                ..Default::default()
+            })
+            .await?;
+        // Push hash of chunk onto chunks_str
+        chunk.local_path = PathBuf::from(f).canonicalize()?;
+        chunks.insert(chunk.hash.to_string(), chunk);
+    }
     // Success
-    Ok(())
+    Ok(chunks)
 }
 
-fn _hash_folder(path: PathBuf) -> Result<PathBuf, Box<dyn Error>> {
+fn chunk_path(path: PathBuf, new_path: &str) -> PathBuf {
     // Split canonicalized path by folder seperator
     let path_str = path.as_path().display().to_string();
-    let fp: Vec<_> = path_str.split("/").collect();
-    let mut hashed_folders = Vec::<String>::new();
-    // Hash each folder and add it to hashed_folders
-    for folder in fp {
-        // Create a SHA3-256 object
-        let mut hasher = Sha3_256::new();
-        // Write password's bytes into hasher
-        hasher.update(folder.as_bytes());
-        // SHA3-256 32-byte secret
-        let hashed_folder = hasher.finalize();
-        // Convert hashed_secret bytes to &str
-        let hf = format!("{:x}", hashed_folder);
-        // Push onto hashed_folders
-        hashed_folders.push(hf);
+    let mut fp: Vec<_> = path_str.split("/").collect();
+    fp.pop().expect("[ERR] failed to pop full path.");
+    let mut pp = PathBuf::new();
+    for p in fp.iter() {
+        pp = pp.join(p);
     }
-    // Assemle all hashed folders as path here
-    let mut t = PathBuf::new();
-    for p in hashed_folders {
-        t = t.join(p);
-    }
-    // Ship it
-    Ok(t)
-}
-
-fn _decode_hashed_folder(path: PathBuf) -> Result<PathBuf, Box<dyn Error>> {
-    // Split canonicalized path by folder seperator
-    let path_str = path.as_path().display().to_string();
-    let fp: Vec<_> = path_str.split("/").collect();
-    let mut hashed_folders = Vec::<String>::new();
-    // Hash each folder and add it to hashed_folders
-    for folder in fp {
-        // Create a SHA3-256 object
-        let mut hasher = Sha3_256::new();
-        // Write password's bytes into hasher
-        hasher.update(folder.as_bytes());
-        // SHA3-256 32-byte secret
-        let hashed_folder = hasher.finalize();
-        // Convert hashed_secret bytes to &str
-        let hf = format!("{:x}", hashed_folder);
-        // Push onto hashed_folders
-        hashed_folders.push(hf);
-    }
-    // Assemle all hashed folders as path here
-    let mut t = PathBuf::new();
-    for p in hashed_folders {
-        t = t.join(p);
-    }
-    // Ship it
-    Ok(t)
+    pp.join(new_path)
 }
 
 pub async fn s3_download(
@@ -123,7 +115,10 @@ pub async fn s3_download(
         })
         .await?;
     // Read result from S3 and convert to bytes
-    let mut result_stream = result.body.unwrap().into_async_read();
+    let mut result_stream = result
+        .body
+        .expect("[ERR] unable to read result body.")
+        .into_async_read();
     let mut result_bytes = Vec::<u8>::new();
     result_stream.read_to_end(&mut result_bytes).await?;
     // Decrypt file
@@ -172,17 +167,85 @@ pub async fn list_s3_bucket(
     Ok(contents)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+// fn hash_folder(path: PathBuf) -> Result<PathBuf, Box<dyn Error>> {
+//     // Split canonicalized path by folder seperator
+//     let path_str = path.as_path().display().to_string();
+//     let fp: Vec<_> = path_str.split("/").collect();
+//     let mut hashed_folders = Vec::<String>::new();
+//     // Hash each folder and add it to hashed_folders
+//     for folder in fp {
+//         // Create a SHA3-256 object
+//         let mut hasher = Sha3_256::new();
+//         // Write password's bytes into hasher
+//         hasher.update(folder.as_bytes());
+//         // SHA3-256 32-byte secret
+//         let hashed_folder = hasher.finalize();
+//         // Convert hashed_secret bytes to &str
+//         let hf = format!("{:x}", hashed_folder);
+//         // Push onto hashed_folders
+//         hashed_folders.push(hf);
+//     }
+//     // Assemle all hashed folders as path here
+//     let mut t = PathBuf::new();
+//     for p in hashed_folders {
+//         t = t.join(p);
+//     }
+//     // Ship it
+//     Ok(t)
+// }
+//
+// fn decode_hashed_folder(path: PathBuf) -> Result<PathBuf, Box<dyn Error>> {
+//     // Split canonicalized path by folder seperator
+//     let path_str = path.as_path().display().to_string();
+//     let fp: Vec<_> = path_str.split("/").collect();
+//     let mut hashed_folders = Vec::<String>::new();
+//     // Hash each folder and add it to hashed_folders
+//     for folder in fp {
+//         // Create a SHA3-256 object
+//         let mut hasher = Sha3_256::new();
+//         // Write password's bytes into hasher
+//         hasher.update(folder.as_bytes());
+//         // SHA3-256 32-byte secret
+//         let hashed_folder = hasher.finalize();
+//         // Convert hashed_secret bytes to &str
+//         let hf = format!("{:x}", hashed_folder);
+//         // Push onto hashed_folders
+//         hashed_folders.push(hf);
+//     }
+//     // Assemle all hashed folders as path here
+//     let mut t = PathBuf::new();
+//     for p in hashed_folders {
+//         t = t.join(p);
+//     }
+//     // Ship it
+//     Ok(t)
+// }
 
-    #[test]
-    fn test_hash_folder() {
-        let folder = fs::canonicalize(PathBuf::from("/Users")).unwrap();
-        let hashed = match hash_folder(folder) {
-            Ok(h) => h,
-            Err(e) => panic!("{}", e),
-        };
-        assert_eq!(&hashed.display().to_string(), "a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a/91fc838600350089e33572adf52541d04987d4582b7d571e2f6908afef7b27d9");
-    }
-}
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+//
+//     #[test]
+//     fn test_split_path() {
+//         let full_path = fs::canonicalize(PathBuf::from(
+//             "/Users/Ryan/Documents/ciehanski.com/index.html",
+//         ))
+//         .unwrap();
+//         let new_path = "blah";
+//         let res = split_path(full_path, new_path);
+//         assert_eq!(
+//             res.as_path().display().to_string(),
+//             "Users/Ryan/Documents/ciehanski.com/blah".to_string()
+//         )
+//     }
+//
+//     #[test]
+//     fn test_hash_folder() {
+//         let folder = fs::canonicalize(PathBuf::from("/Users")).unwrap();
+//         let hashed = match hash_folder(folder) {
+//             Ok(h) => h,
+//             Err(e) => panic!("{}", e),
+//         };
+//         assert_eq!(&hashed.display().to_string(), "a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a/91fc838600350089e33572adf52541d04987d4582b7d571e2f6908afef7b27d9");
+//     }
+// }

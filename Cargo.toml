@@ -7,10 +7,10 @@ edition = "2018"
 [dependencies]
 chrono = { version = "0.4", features = ["serde"] }
 walkdir = "2.3.1"
-dialoguer = "0.6.2"
+dialoguer = "0.6"
 structopt = "0.3.14"
 serde = { version = "1.0.101", features = ["derive"] }
-serde_json = "1.0.53"
+serde_json = "1.0"
 uuid = { version = "0.8", features = ["serde", "v4"] }
 rand = "0.7.3"
 aead = "0.3.0"
@@ -18,11 +18,12 @@ chacha20poly1305 = "0.5.0"
 sha3 = "0.9.0"
 rusoto_core = "0.43.0"
 rusoto_s3 = "0.43.0"
-tokio = "0.2.21"
-futures = "0.3.5"
-colored = "1.9.3"
-prettytable-rs = "0.8.0"
-# fastcdc = "1.0.3"
+tokio = "0.2"
+colored = "1.9"
+prettytable-rs = "0.8"
+fastcdc = "1.0.3"
+crypto-hash = "0.3.4"
+pretty-bytes = "0.2.2"
 # directories = "2.0.2"
 
 [lib]

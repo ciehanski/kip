@@ -2,10 +2,11 @@
 use kip::args::{Opt, Subcommands};
 use kip::conf::KipConf;
 use kip::job::Job;
-//use kip::job_pool::JobPool;
+// use kip::job_pool::JobPool;
 // External imports
 use colored::*;
 use dialoguer::Confirm;
+use pretty_bytes::converter::convert;
 use prettytable::{Cell, Row, Table};
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
@@ -25,6 +26,15 @@ async fn main() {
 
     // Create job pool for backup jobs
     // let job_pool = JobPool::new(3);
+    // Loop and execute jobs according to
+    // user defined backup interval
+    // Get config
+    // let cfg = KipConf::get().unwrap_or_else(|e| {
+    //     terminate!("{} failed to get kip configuration: {}.", "[ERR]".red(), e);
+    // });
+    // job_pool.execute(move || loop {
+    //     cfg.poll_backup_jobs("");
+    // });
 
     // Get subcommands and args
     let args: Opt = Opt::from_args();
@@ -236,6 +246,7 @@ async fn main() {
         // Start a backup restore
         Subcommands::Pull {
             job,
+            run,
             secret,
             output_folder,
         } => {
@@ -256,6 +267,7 @@ async fn main() {
             //job_pool.execute(move || {
             match j
                 .run_restore(
+                    run,
                     &secret,
                     &cfg.s3_access_key,
                     &cfg.s3_secret_key,
@@ -329,47 +341,114 @@ async fn main() {
         }
 
         // List all jobs
-        Subcommands::List {} => {
+        Subcommands::List { job, run } => {
             // Get config
             let cfg = KipConf::get().unwrap_or_else(|e| {
                 terminate!("{} failed to get kip configuration: {}.", "[ERR]".red(), e);
             });
             // Create the table
             let mut table = Table::new();
-            // Create the title row
-            table.add_row(Row::new(vec![
-                Cell::new("Name"),
-                Cell::new("ID"),
-                Cell::new("Bucket"),
-                Cell::new("Region"),
-                Cell::new("Files"),
-                Cell::new("Total Runs"),
-                Cell::new("Last Run"),
-                Cell::new("Status"),
-            ]));
-            // For each job, add a row
-            for (_, j) in cfg.jobs {
+            //
+            if job == None && run == None {
+                // Create the title row
+                table.add_row(Row::new(vec![
+                    Cell::new("Name"),
+                    Cell::new("ID"),
+                    Cell::new("Bucket"),
+                    Cell::new("Region"),
+                    Cell::new("Files"),
+                    Cell::new("Total Runs"),
+                    Cell::new("Last Run"),
+                    Cell::new("Status"),
+                ]));
+                // For each job, add a row
+                for (_, j) in cfg.jobs {
+                    let correct_last_run = if j.last_run.format("%Y-%m-%d %H:%M:%S").to_string()
+                        == "1970-01-01 00:00:00"
+                    {
+                        "NEVER_RUN".to_string()
+                    } else {
+                        j.last_run.format("%Y-%m-%d %H:%M:%S").to_string()
+                    };
+                    // Add row with job info
+                    table.add_row(Row::new(vec![
+                        Cell::new(&format!("{}", j.name.to_string())),
+                        Cell::new(&format!("{}", j.id)),
+                        Cell::new(&format!("{}", j.aws_bucket.to_string())),
+                        Cell::new(&format!("{}", j.aws_region.to_string())),
+                        Cell::new(&format!("{}", j.files_amt)),
+                        Cell::new(&format!("{}", j.total_runs)),
+                        Cell::new(&format!("{}", correct_last_run)),
+                        Cell::new(&format!("{}", j.last_status)),
+                    ]));
+                }
+                // Print the job table
+                table.printstd();
+            } else if job != None && run == None {
+                table.add_row(Row::new(vec![
+                    Cell::new("Name"),
+                    Cell::new("ID"),
+                    Cell::new("Bucket"),
+                    Cell::new("Region"),
+                    Cell::new("Selected Files"),
+                    Cell::new("Total Runs"),
+                    Cell::new("Last Run"),
+                    Cell::new("Status"),
+                ]));
+                let j = cfg.jobs.get(&job.unwrap()).unwrap();
+                // For each job, add a row
                 let correct_last_run = if j.last_run.format("%Y-%m-%d %H:%M:%S").to_string()
                     == "1970-01-01 00:00:00"
                 {
                     "NEVER_RUN".to_string()
                 } else {
-                    j.last_run.clone().to_string()
+                    j.last_run.format("%Y-%m-%d %H:%M:%S").to_string()
                 };
+                // Pretty print files
+                let files_vec: Vec<_> = j.files.iter().map(|e| e.display().to_string()).collect();
+                let mut correct_files = String::from("");
+                for f in files_vec {
+                    correct_files.push_str(&f);
+                    correct_files.push_str("\n");
+                }
                 // Add row with job info
                 table.add_row(Row::new(vec![
                     Cell::new(&format!("{}", j.name.to_string())),
                     Cell::new(&format!("{}", j.id)),
                     Cell::new(&format!("{}", j.aws_bucket.to_string())),
                     Cell::new(&format!("{}", j.aws_region.to_string())),
-                    Cell::new(&format!("{}", j.files_amt)),
+                    Cell::new(&format!("{}", correct_files)),
                     Cell::new(&format!("{}", j.total_runs)),
-                    Cell::new(&format!("{}", correct_last_run.to_string())),
+                    Cell::new(&format!("{}", correct_last_run)),
                     Cell::new(&format!("{}", j.last_status)),
                 ]));
+                // Print the job table
+                table.printstd();
+            } else if job != None && run != None {
+                table.add_row(Row::new(vec![
+                    Cell::new("Name"),
+                    Cell::new("Bucket"),
+                    Cell::new("Region"),
+                    Cell::new("Files Uploaded"),
+                    Cell::new("Bytes Uploaded"),
+                    Cell::new("Runtime"),
+                    Cell::new("Status"),
+                ]));
+                let j = cfg.jobs.get(&job.unwrap()).unwrap();
+                let r = j.runs.get(&run.unwrap()).unwrap();
+                // Add row with run info
+                table.add_row(Row::new(vec![
+                    Cell::new(&format!("{}-{}", j.name.to_string(), r.id)),
+                    Cell::new(&format!("{}", j.aws_bucket.to_string())),
+                    Cell::new(&format!("{}", j.aws_region.to_string())),
+                    Cell::new(&format!("{}", r.files_changed.len())),
+                    Cell::new(&format!("{}", convert(r.bytes_uploaded as f64))),
+                    Cell::new(&format!("{}", r.time_elapsed)),
+                    Cell::new(&format!("{}", j.last_status)),
+                ]));
+                // Print the job table
+                table.printstd();
             }
-            // Print the job table
-            table.printstd();
         }
     }
 }
