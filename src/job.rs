@@ -16,7 +16,7 @@ pub struct Job {
     pub id: Uuid,
     pub name: String,
     pub aws_bucket: String,
-    pub aws_region: String,
+    pub aws_region: Region,
     pub files: Vec<PathBuf>,
     pub files_amt: usize,
     pub runs: HashMap<usize, Run>,
@@ -55,7 +55,7 @@ impl Job {
             id: Uuid::new_v4(),
             name: name.to_string(),
             aws_bucket: aws_bucket.to_string(),
-            aws_region: aws_region.to_string(),
+            aws_region: Job::parse_s3_region(aws_region),
             files: Vec::<PathBuf>::new(),
             files_amt: 0,
             runs: HashMap::new(),
@@ -68,7 +68,7 @@ impl Job {
     }
 
     // Parse aws region input into a Region object
-    pub fn parse_s3_region(s3_region: String) -> Region {
+    fn parse_s3_region(s3_region: &str) -> Region {
         match &s3_region[..] {
             "ap-east-1" => Region::ApEast1,
             "ap-northeast-1" => Region::ApNortheast1,
@@ -98,7 +98,7 @@ impl Job {
     pub fn get_files_amt(&self) -> usize {
         let mut correct_files_num: usize = 0;
         for f in self.files.iter() {
-            if Path::new(&f).exists() && Path::new(&f).is_dir() {
+            if f.exists() && f.is_dir() {
                 for entry in WalkDir::new(f) {
                     let entry = entry.expect("[ERR] unable to get directory.");
                     if Path::is_dir(entry.path()) {
@@ -106,7 +106,7 @@ impl Job {
                     }
                     correct_files_num += 1;
                 }
-            } else if Path::new(&f).exists() {
+            } else if f.exists() {
                 correct_files_num += 1;
             }
         }
@@ -122,7 +122,7 @@ impl Job {
         // Set AWS env vars for backup
         env::set_var("AWS_ACCESS_KEY_ID", aws_access);
         env::set_var("AWS_SECRET_ACCESS_KEY", aws_secret);
-        env::set_var("AWS_REGION", &self.aws_region);
+        env::set_var("AWS_REGION", &self.aws_region.name());
         // Create new run
         let mut r = Run::new(self.total_runs + 1);
         // Set job metadata
@@ -167,7 +167,7 @@ impl Job {
                 self.first_run = Utc::now();
             }
         } else {
-            println!("[INFO] no file changes detected.");
+            println!("{} no file changes detected.", "[INFO]".yellow());
         }
         // Set job status
         if r.status == KipStatus::WARN {
@@ -192,7 +192,7 @@ impl Job {
         // Set AWS env vars for backup
         env::set_var("AWS_ACCESS_KEY_ID", aws_access);
         env::set_var("AWS_SECRET_ACCESS_KEY", aws_secret);
-        env::set_var("AWS_REGION", &self.aws_region);
+        env::set_var("AWS_REGION", &self.aws_region.name());
         // Get run from job
         let r = match self.runs.get(&run) {
             Some(run) => run,

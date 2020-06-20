@@ -113,7 +113,8 @@ async fn main() {
             }
             // Push new files to job
             for f in file_path {
-                j.files.push(PathBuf::from(f));
+                j.files
+                    .push(PathBuf::from(f).as_path().canonicalize().unwrap());
             }
             // Get new files amount for job
             j.files_amt = j.get_files_amt();
@@ -375,10 +376,10 @@ async fn main() {
                         Cell::new(&format!("{}", j.name.to_string())),
                         Cell::new(&format!("{}", j.id)),
                         Cell::new(&format!("{}", j.aws_bucket.to_string())),
-                        Cell::new(&format!("{}", j.aws_region.to_string())),
+                        Cell::new(&format!("{}", j.aws_region.name())),
                         Cell::new(&format!("{}", j.files_amt)),
                         Cell::new(&format!("{}", j.total_runs)),
-                        Cell::new(&format!("{}", correct_last_run)),
+                        Cell::new(&format!("{} UTC", correct_last_run)),
                         Cell::new(&format!("{}", j.last_status)),
                     ]));
                 }
@@ -416,10 +417,10 @@ async fn main() {
                     Cell::new(&format!("{}", j.name.to_string())),
                     Cell::new(&format!("{}", j.id)),
                     Cell::new(&format!("{}", j.aws_bucket.to_string())),
-                    Cell::new(&format!("{}", j.aws_region.to_string())),
+                    Cell::new(&format!("{}", j.aws_region.name())),
                     Cell::new(&format!("{}", correct_files)),
                     Cell::new(&format!("{}", j.total_runs)),
-                    Cell::new(&format!("{}", correct_last_run)),
+                    Cell::new(&format!("{} UTC", correct_last_run)),
                     Cell::new(&format!("{}", j.last_status)),
                 ]));
                 // Print the job table
@@ -440,7 +441,7 @@ async fn main() {
                 table.add_row(Row::new(vec![
                     Cell::new(&format!("{}-{}", j.name.to_string(), r.id)),
                     Cell::new(&format!("{}", j.aws_bucket.to_string())),
-                    Cell::new(&format!("{}", j.aws_region.to_string())),
+                    Cell::new(&format!("{}", j.aws_region.name())),
                     Cell::new(&format!("{}", r.files_changed.len())),
                     Cell::new(&format!("{}", convert(r.bytes_uploaded as f64))),
                     Cell::new(&format!("{}", r.time_elapsed)),

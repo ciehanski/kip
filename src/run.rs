@@ -41,20 +41,17 @@ impl Run {
         self.status = KipStatus::IN_PROGRESS;
         // TODO: S3 by default will allow 10 concurrent requests
         // For each file or dir, upload it
-        let mut counter: usize = 0;
         let mut bytes_uploaded: usize = 0;
         for f in job.files.iter() {
             // Check if file or directory exists
             if !f.exists() {
                 self.status = KipStatus::WARN;
                 self.logs.push(format!(
-                    "[{}] {}-{} ⇉ '{}' can not be found. ({}/{})",
+                    "[{}] {}-{} ⇉ '{}' can not be found.",
                     Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                     job.name,
                     self.id,
                     f.display().to_string().red(),
-                    counter,
-                    job.files_amt,
                 ));
                 continue;
             }
@@ -63,49 +60,44 @@ impl Run {
             if fmd.is_file() {
                 // Upload
                 match s3_upload(
-                    &f.display().to_string(),
+                    &f.as_path().canonicalize().unwrap(),
                     fmd.len(),
                     job.id,
                     job.aws_bucket.clone(),
-                    Job::parse_s3_region(job.aws_region.clone()),
+                    job.aws_region.clone(),
                     secret,
                 )
                 .await
                 {
                     Ok(chunked_file) => {
                         self.status = KipStatus::OK;
-                        // Confirm the chunked file is not empty
+                        // Confirm the chunked file is not empty AKA
+                        // this chunk has not been modified, skip it
                         if !chunked_file.is_empty() {
-                            // Increase file counter
-                            counter += 1;
                             // Increase bytes uploaded for this run
                             bytes_uploaded += fmd.len() as usize;
                             // Push chunked file onto run's changed files
                             self.files_changed.push(chunked_file);
                             // Push logs to run
                             self.logs.push(format!(
-                                "[{}] {}-{} ⇉ '{}' uploaded successfully to '{}'. ({}/{})",
+                                "[{}] {}-{} ⇉ '{}' uploaded successfully to '{}'.",
                                 Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                                 job.name,
                                 self.id,
                                 f.display().to_string().green(),
                                 job.aws_bucket.clone(),
-                                counter,
-                                job.files_amt,
                             ));
                         }
                     }
                     Err(e) => {
                         self.status = KipStatus::ERR;
                         self.logs.push(format!(
-                            "[{}] {}-{} ⇉ '{}' upload failed: {}. ({}/{})",
+                            "[{}] {}-{} ⇉ '{}' upload failed: {}.",
                             Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                             job.name,
                             self.id,
                             f.display().to_string().red(),
                             e,
-                            counter,
-                            job.files_amt,
                         ));
                     }
                 };
@@ -123,11 +115,11 @@ impl Run {
                     }
                     // Upload
                     match s3_upload(
-                        &entry.path().display().to_string(),
+                        &entry.path().canonicalize().unwrap(),
                         fmd.len(),
                         job.id,
                         job.aws_bucket.clone(),
-                        Job::parse_s3_region(job.aws_region.clone()),
+                        job.aws_region.clone(),
                         secret,
                     )
                     .await
@@ -136,36 +128,30 @@ impl Run {
                             self.status = KipStatus::OK;
                             // Confirm the chunked file is not empty
                             if !chunked_file.is_empty() {
-                                // Increase file counter
-                                counter += 1;
                                 // Increase bytes uploaded for this run
                                 bytes_uploaded += fmd.len() as usize;
                                 // Push chunked file onto run's changed files
                                 self.files_changed.push(chunked_file);
                                 // Push logs
                                 self.logs.push(format!(
-                                    "[{}] {}-{} ⇉ '{}' uploaded successfully to '{}'. ({}/{})",
+                                    "[{}] {}-{} ⇉ '{}' uploaded successfully to '{}'.",
                                     Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                                     job.name,
                                     self.id,
                                     entry.path().display().to_string().green(),
                                     job.aws_bucket.clone(),
-                                    counter,
-                                    job.files_amt,
                                 ));
                             }
                         }
                         Err(e) => {
                             self.status = KipStatus::ERR;
                             self.logs.push(format!(
-                                "[{}] {}-{} ⇉ '{}' upload failed: {}. ({}/{})",
+                                "[{}] {}-{} ⇉ '{}' upload failed: {}.",
                                 Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                                 job.name,
                                 self.id,
                                 entry.path().display().to_string().red(),
                                 e,
-                                counter,
-                                job.files_amt,
                             ));
                         }
                     };
@@ -194,11 +180,7 @@ impl Run {
         output_folder: Option<String>,
     ) -> Result<(), Box<dyn Error>> {
         // Get all bucket contents
-        let bucket_objects = list_s3_bucket(
-            &job.aws_bucket,
-            Job::parse_s3_region(job.aws_region.clone()),
-        )
-        .await?;
+        let bucket_objects = list_s3_bucket(&job.aws_bucket, job.aws_region.clone()).await?;
         // Get output folder
         let output_folder = output_folder.unwrap_or_default();
         // For each object in the bucket, download it
@@ -229,7 +211,7 @@ impl Run {
             match s3_download(
                 &path,
                 &job.aws_bucket,
-                Job::parse_s3_region(job.aws_region.clone()),
+                job.aws_region.clone(),
                 secret,
                 &output_folder,
             )

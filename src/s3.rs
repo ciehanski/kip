@@ -1,7 +1,6 @@
 use crate::chunk::chunk_file;
 use crate::chunk::FileChunk;
 use crate::crypto::{decrypt, encrypt};
-use colored::*;
 use rusoto_core::Region;
 use rusoto_s3::{
     GetObjectRequest, ListObjectsV2Request, Object, PutObjectRequest, S3Client, StreamingBody, S3,
@@ -16,7 +15,7 @@ use tokio::io::AsyncReadExt;
 use uuid::Uuid;
 
 pub async fn s3_upload(
-    f: &str,
+    f: &PathBuf,
     fmd_len: u64,
     job_id: Uuid,
     aws_bucket: String,
@@ -30,7 +29,7 @@ pub async fn s3_upload(
     // TODO: remove this yucky clone. Im sorry
     for mut chunk in chunked_file.clone() {
         // Get full path of chunked file (SHA256 hash)
-        let chunked_path = get_chunk_path(PathBuf::from(f).canonicalize()?, &chunk.hash);
+        let chunked_path = get_chunk_path(f, &chunk.hash);
         // Check S3 if this chunk aleady exists
         let s3_objs = list_s3_bucket(&aws_bucket, aws_region.clone()).await?;
         let mut cont = false;
@@ -57,7 +56,7 @@ pub async fn s3_upload(
             Err(e) => {
                 return Err(Box::new(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
-                    format!("{} failed to encrypt file: {:?}.", "[ERR]".red(), e),
+                    format!("failed to encrypt file: {}.", e),
                 )));
             }
         };
@@ -85,7 +84,7 @@ pub async fn s3_upload(
     Ok(chunks)
 }
 
-fn get_chunk_path(path: PathBuf, new_path: &str) -> PathBuf {
+fn get_chunk_path(path: &PathBuf, new_path: &str) -> PathBuf {
     // Split canonicalized path by folder seperator
     let path_str = path.as_path().display().to_string();
     let mut fp: Vec<_> = path_str.split("/").collect();
@@ -127,7 +126,7 @@ pub async fn s3_download(
         Err(e) => {
             return Err(Box::new(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("{} failed to decrypt file: {:?}.", "[ERR]".red(), e),
+                format!("failed to decrypt file: {}.", e),
             )));
         }
     };
