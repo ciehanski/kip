@@ -24,18 +24,6 @@ async fn main() {
         ),
     };
 
-    // Create job pool for backup jobs
-    // let job_pool = JobPool::new(3);
-    // Loop and execute jobs according to
-    // user defined backup interval
-    // Get config
-    // let cfg = KipConf::get().unwrap_or_else(|e| {
-    //     terminate!("{} failed to get kip configuration: {}.", "[ERR]".red(), e);
-    // });
-    // job_pool.execute(move || loop {
-    //     cfg.poll_backup_jobs("");
-    // });
-
     // Get subcommands and args
     let args: Opt = Opt::from_args();
     let _debug = args.debug;
@@ -85,7 +73,6 @@ async fn main() {
             }
         }
 
-        // TODO: fix all the for loops in add. I don't like them
         // Add more files or directories to job
         Subcommands::Add { job, file_path } => {
             // Check if file or directory exists
@@ -117,7 +104,9 @@ async fn main() {
                     .push(PathBuf::from(f).as_path().canonicalize().unwrap());
             }
             // Get new files amount for job
-            j.files_amt = j.get_files_amt();
+            j.files_amt = j
+                .get_files_amt()
+                .expect("[ERR] failed to get files amount for job.");
             // Save changes to config file
             match cfg.save() {
                 Ok(_) => println!(
@@ -156,7 +145,9 @@ async fn main() {
                             // Retain all elements != files_path argument provided
                             j.files.retain(|i| i != &PathBuf::from(&f));
                             // Get new files amount for job
-                            j.files_amt = j.get_files_amt();
+                            j.files_amt = j
+                                .get_files_amt()
+                                .expect("[ERR] failed to get files amount for job.");
                         } else {
                             terminate!(
                                 "{} job {} does not contain '{}'.",
@@ -167,7 +158,9 @@ async fn main() {
                         };
                     }
                     // Update files amt for job
-                    j.files_amt = j.get_files_amt();
+                    j.files_amt = j
+                        .get_files_amt()
+                        .expect("[ERR] failed to get files amount for job.");
                     // Save changes to config file
                     match cfg.save() {
                         Ok(_) => println!(
@@ -212,10 +205,11 @@ async fn main() {
                 terminate!("{} job '{}' doesn't exist.", "[ERR]".red(), &job);
             });
             // Get new files amount for job
-            j.files_amt = j.get_files_amt();
+            j.files_amt = j
+                .get_files_amt()
+                .expect("[ERR] failed to get files amount for job.");
             // Upload all files in a seperate thread
             let bkt_name = j.aws_bucket.clone();
-            //job_pool.execute(move || {
             match j
                 .run_upload(&secret, &cfg.s3_access_key, &cfg.s3_secret_key)
                 .await
@@ -241,7 +235,6 @@ async fn main() {
                 Ok(_) => (),
                 Err(e) => eprintln!("{} failed to save kip configuration: {}", "[ERR]".red(), e),
             }
-            //});
         }
 
         // Start a backup restore
@@ -265,7 +258,6 @@ async fn main() {
                 terminate!("{} job '{}' doesn't exist.", "[ERR]".red(), &job);
             });
             // Only one restore can be happening at a time
-            //job_pool.execute(move || {
             match j
                 .run_restore(
                     run,
@@ -288,7 +280,6 @@ async fn main() {
                 Ok(_) => (),
                 Err(e) => eprintln!("{} failed to save kip configuration: {}", "[ERR]".red(), e),
             }
-            //})
         }
 
         // Abort a running job
@@ -303,12 +294,9 @@ async fn main() {
                 cfg.prompt_s3_keys();
             };
             // Get job from argument provided
-            let j = match cfg.jobs.get_mut(&job) {
-                Some(j) => j.clone(),
-                None => {
-                    terminate!("{} job '{}' does not exist.", "[ERR]".red(), &job);
-                }
-            };
+            let j = cfg.jobs.get_mut(&job).unwrap_or_else(|| {
+                terminate!("{} job '{}' doesn't exist.", "[ERR]".red(), &job);
+            });
             // Confirm removal
             if !Confirm::new()
                 .with_prompt(format!("Are you sure you want to abort '{}'?", &job))
@@ -318,14 +306,10 @@ async fn main() {
                 std::process::exit(0);
             }
             // Abort job
-            //job_pool.execute(move || {
-            // Grab the job's thread id and
-            // thread.join() to kill it. Since we
-            // aren't doing multipart, we can't
-            // abort from S3's API :/
-            // IDK how to do this lol
+            // Grab the job's thread id and thread.join() to kill
+            // it. Since we aren't doing multipart, we can't abort
+            // from S3's API :/ IDK how to do this lol
             j.abort();
-            //})
         }
 
         // Get the status of a job
@@ -369,7 +353,7 @@ async fn main() {
                     {
                         "NEVER_RUN".to_string()
                     } else {
-                        j.last_run.format("%Y-%m-%d %H:%M:%S").to_string()
+                        j.last_run.format("%Y-%m-%d %H:%M:%S UTC").to_string()
                     };
                     // Add row with job info
                     table.add_row(Row::new(vec![
@@ -379,7 +363,7 @@ async fn main() {
                         Cell::new(&format!("{}", j.aws_region.name())),
                         Cell::new(&format!("{}", j.files_amt)),
                         Cell::new(&format!("{}", j.total_runs)),
-                        Cell::new(&format!("{} UTC", correct_last_run)),
+                        Cell::new(&format!("{}", correct_last_run)),
                         Cell::new(&format!("{}", j.last_status)),
                     ]));
                 }
@@ -403,7 +387,7 @@ async fn main() {
                 {
                     "NEVER_RUN".to_string()
                 } else {
-                    j.last_run.format("%Y-%m-%d %H:%M:%S").to_string()
+                    j.last_run.format("%Y-%m-%d %H:%M:%S UTC").to_string()
                 };
                 // Pretty print files
                 let files_vec: Vec<_> = j.files.iter().map(|e| e.display().to_string()).collect();
@@ -420,7 +404,7 @@ async fn main() {
                     Cell::new(&format!("{}", j.aws_region.name())),
                     Cell::new(&format!("{}", correct_files)),
                     Cell::new(&format!("{}", j.total_runs)),
-                    Cell::new(&format!("{} UTC", correct_last_run)),
+                    Cell::new(&format!("{}", correct_last_run)),
                     Cell::new(&format!("{}", j.last_status)),
                 ]));
                 // Print the job table
@@ -445,10 +429,22 @@ async fn main() {
                     Cell::new(&format!("{}", r.files_changed.len())),
                     Cell::new(&format!("{}", convert(r.bytes_uploaded as f64))),
                     Cell::new(&format!("{}", r.time_elapsed)),
-                    Cell::new(&format!("{}", j.last_status)),
+                    Cell::new(&format!("{}", r.status)),
                 ]));
+                // Create a table for logs
+                let mut logs_table = Table::new();
+                logs_table.add_row(Row::new(vec![Cell::new("Logs")]));
+                // Pretty print logs
+                let mut pretty_logs = String::from("");
+                for l in r.logs.iter() {
+                    pretty_logs.push_str(&l);
+                    pretty_logs.push_str("\n");
+                }
+                // Add row to logs table
+                logs_table.add_row(Row::new(vec![Cell::new(&format!("{}", pretty_logs))]));
                 // Print the job table
                 table.printstd();
+                logs_table.printstd();
             }
         }
     }

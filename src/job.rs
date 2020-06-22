@@ -95,12 +95,12 @@ impl Job {
 
     // Get correct number of files in job (not just...
     // entries within 'files')
-    pub fn get_files_amt(&self) -> usize {
+    pub fn get_files_amt(&self) -> Result<usize, Box<dyn Error>> {
         let mut correct_files_num: usize = 0;
         for f in self.files.iter() {
             if f.exists() && f.is_dir() {
                 for entry in WalkDir::new(f) {
-                    let entry = entry.expect("[ERR] unable to get directory.");
+                    let entry = entry?;
                     if Path::is_dir(entry.path()) {
                         continue;
                     }
@@ -110,7 +110,7 @@ impl Job {
                 correct_files_num += 1;
             }
         }
-        correct_files_num
+        Ok(correct_files_num)
     }
 
     pub async fn run_upload(
@@ -154,21 +154,6 @@ impl Job {
         env::set_var("AWS_ACCESS_KEY_ID", "");
         env::set_var("AWS_SECRET_ACCESS_KEY", "");
         env::set_var("AWS_REGION", "");
-        // Print all logs from run
-        if !r.logs.is_empty() {
-            for l in r.logs.iter() {
-                println!("{}", l);
-            }
-            // Add run to job only if anything was uploaded
-            self.runs.insert(r.id, r.clone());
-            self.total_runs += 1;
-            self.last_run = Utc::now();
-            if self.first_run.format("%Y-%m-%d %H:%M:%S").to_string() == "1970-01-01 00:00:00" {
-                self.first_run = Utc::now();
-            }
-        } else {
-            println!("{} no file changes detected.", "[INFO]".yellow());
-        }
         // Set job status
         if r.status == KipStatus::WARN {
             self.last_status = KipStatus::WARN;
@@ -176,6 +161,21 @@ impl Job {
             self.last_status = KipStatus::ERR;
         } else {
             self.last_status = KipStatus::OK;
+        }
+        // Print all logs from run
+        if !r.logs.is_empty() {
+            for l in r.logs.iter() {
+                println!("{}", l);
+            }
+            // Add run to job only if anything was uploaded
+            self.runs.insert(r.id, r);
+            self.total_runs += 1;
+            self.last_run = Utc::now();
+            if self.first_run.format("%Y-%m-%d %H:%M:%S").to_string() == "1970-01-01 00:00:00" {
+                self.first_run = Utc::now();
+            }
+        } else {
+            println!("{} no file changes detected.", "[INFO]".yellow());
         }
         // Success
         Ok(())
@@ -231,7 +231,7 @@ impl Job {
         Ok(())
     }
 
-    pub fn abort(self) {
+    pub fn abort(&mut self) {
         unimplemented!();
     }
 }

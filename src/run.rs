@@ -6,7 +6,9 @@ use colored::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::error::Error;
-use std::fs::metadata;
+use std::fs::{metadata, File};
+use std::io::prelude::*;
+use std::path::Path;
 use walkdir::WalkDir;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -40,7 +42,6 @@ impl Run {
         self.started = Utc::now();
         self.status = KipStatus::IN_PROGRESS;
         // TODO: S3 by default will allow 10 concurrent requests
-        // For each file or dir, upload it
         let mut bytes_uploaded: usize = 0;
         for f in job.files.iter() {
             // Check if file or directory exists
@@ -60,7 +61,7 @@ impl Run {
             if fmd.is_file() {
                 // Upload
                 match s3_upload(
-                    &f.as_path().canonicalize().unwrap(),
+                    &f.as_path().canonicalize()?,
                     fmd.len(),
                     job.id,
                     job.aws_bucket.clone(),
@@ -70,6 +71,7 @@ impl Run {
                 .await
                 {
                     Ok(chunked_file) => {
+                        // Set run status to OK
                         self.status = KipStatus::OK;
                         // Confirm the chunked file is not empty AKA
                         // this chunk has not been modified, skip it
@@ -78,7 +80,7 @@ impl Run {
                             bytes_uploaded += fmd.len() as usize;
                             // Push chunked file onto run's changed files
                             self.files_changed.push(chunked_file);
-                            // Push logs to run
+                            // Push logs
                             self.logs.push(format!(
                                 "[{}] {}-{} ⇉ '{}' uploaded successfully to '{}'.",
                                 Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
@@ -90,7 +92,9 @@ impl Run {
                         }
                     }
                     Err(e) => {
+                        // Set run status to ERR
                         self.status = KipStatus::ERR;
+                        // Push logs
                         self.logs.push(format!(
                             "[{}] {}-{} ⇉ '{}' upload failed: {}.",
                             Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
@@ -115,7 +119,7 @@ impl Run {
                     }
                     // Upload
                     match s3_upload(
-                        &entry.path().canonicalize().unwrap(),
+                        &entry.path().canonicalize()?,
                         fmd.len(),
                         job.id,
                         job.aws_bucket.clone(),
@@ -125,6 +129,7 @@ impl Run {
                     .await
                     {
                         Ok(chunked_file) => {
+                            // Set run status to OK
                             self.status = KipStatus::OK;
                             // Confirm the chunked file is not empty
                             if !chunked_file.is_empty() {
@@ -144,7 +149,9 @@ impl Run {
                             }
                         }
                         Err(e) => {
+                            // Set run status to ERR
                             self.status = KipStatus::ERR;
+                            // Push logs
                             self.logs.push(format!(
                                 "[{}] {}-{} ⇉ '{}' upload failed: {}.",
                                 Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
@@ -190,42 +197,34 @@ impl Run {
             let mut path = String::from("");
             for ob in bucket_objects.iter() {
                 // pop hash off from S3 path
-                let s3_path = ob
-                    .key
-                    .clone()
-                    .expect("[ERR] unable to get file name from S3");
+                let s3_path = ob.key.clone().expect("unable to get chunk's name from S3.");
                 let mut fp: Vec<_> = s3_path.split("/").collect();
-                let hash = fp.pop().expect("[ERR] failed to pop S3 path.");
+                let hash = fp.pop().expect("failed to pop chunk's S3 path.");
                 let hs: Vec<_> = hash.split(".").collect();
                 if !fc.contains_key(hs[0]) {
-                    // Not found :(
+                    // S3 object not found in this run
                     continue;
                 } else {
                     // Found! Download this chunk
-                    path.push_str(&ob.key.clone().unwrap());
+                    path.push_str(&ob.key.clone().expect("unable to get chunk's name from S3."));
                 }
             }
             // Increment file counter
             counter += 1;
-            // Download file
-            match s3_download(
-                &path,
-                &job.aws_bucket,
-                job.aws_region.clone(),
-                secret,
-                &output_folder,
-            )
-            .await
-            {
-                Ok(_) => {
+            // Store the returned downloaded and decrypted bytes for chunk
+            let mut chunk_bytes: Vec<u8> = Vec::new();
+            // Download chunk
+            match s3_download(&path, &job.aws_bucket, job.aws_region.clone(), secret).await {
+                Ok(cb) => {
+                    chunk_bytes = cb;
                     println!(
                         "[{}] {}-{} ⇉ '{}' restored successfully. ({}/{})",
                         Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                         job.name,
                         self.id,
-                        &path,
+                        &path.to_string().green(),
                         counter,
-                        job.files_amt,
+                        self.files_changed.len(),
                     );
                 }
                 Err(e) => {
@@ -234,15 +233,70 @@ impl Run {
                         Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                         job.name,
                         self.id,
-                        &path,
+                        &path.to_string().red(),
                         e,
                         counter,
-                        job.files_amt,
+                        self.files_changed.len(),
                     );
                 }
             }
+            // Write chunks to disk
+            let mut t: Vec<(&FileChunk, Vec<u8>)> = Vec::new();
+            for (_, chunk) in fc.into_iter() {
+                if self.is_single_chunk(chunk) {
+                    write_single_chunk(chunk, &chunk_bytes, &output_folder)?;
+                } else {
+                    // find all chunks associated with the same path
+                    // and combine them according to their offsets and
+                    // lengths and then save to the original local path
+                    t.push((chunk, chunk_bytes.clone()));
+                }
+            }
+            // let t = t.sort_by(|a, b| b.0.local_path.cmp(&a.0.local_path));
+            // println!("{:?}", t);
+            // let b = t.windows(2).all(|c| c[0].0.local_path == c[1].0.local_path);
+            // println!("{:?}", b);
         }
         // Success
         Ok(())
     }
+
+    fn is_single_chunk(&self, fc: &FileChunk) -> bool {
+        let mut count: usize = 0;
+        for cf in self.files_changed.iter().into_iter() {
+            for (_, c) in cf {
+                if c.local_path == fc.local_path {
+                    count += 1;
+                }
+            }
+        }
+        if count > 1 {
+            return false;
+        }
+        true
+    }
+}
+
+fn write_single_chunk(
+    chunk: &FileChunk,
+    chunk_bytes: &[u8],
+    output_folder: &str,
+) -> Result<(), Box<dyn Error>> {
+    // Create parent directory if missing
+    let correct_chunk_path = chunk.local_path.strip_prefix("/")?;
+    let folder_path = Path::new(&output_folder).join(correct_chunk_path);
+    let folder_parent = match folder_path.parent() {
+        Some(p) => p,
+        _ => &folder_path,
+    };
+    std::fs::create_dir_all(folder_parent)?;
+    // Create the file
+    if !Path::new(&output_folder).join(correct_chunk_path).exists() {
+        let mut dfile = File::create(Path::new(&output_folder).join(correct_chunk_path))?;
+        dfile.write_all(&chunk_bytes)?;
+    } else {
+        let mut dfile = File::open(Path::new(&output_folder).join(correct_chunk_path))?;
+        dfile.write_all(&chunk_bytes)?;
+    }
+    Ok(())
 }
