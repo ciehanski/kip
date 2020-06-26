@@ -57,7 +57,7 @@ pub async fn s3_upload(
             .put_object(PutObjectRequest {
                 bucket: aws_bucket.clone(),
                 key: format!(
-                    "{}/{}.chunk",
+                    "{}{}.chunk",
                     job_id,
                     chunked_path.as_path().display().to_string()
                 ),

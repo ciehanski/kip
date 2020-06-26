@@ -18,7 +18,7 @@ pub struct Run {
     pub started: DateTime<Utc>,
     pub time_elapsed: String,
     pub finished: DateTime<Utc>,
-    pub bytes_uploaded: usize,
+    pub bytes_uploaded: u64,
     pub files_changed: Vec<HashMap<String, FileChunk>>,
     pub status: KipStatus,
     pub logs: Vec<String>,
@@ -46,7 +46,7 @@ impl Run {
         // via ThreadPool I guess?
         let mut warn: usize = 0;
         let mut err: usize = 0;
-        let mut bytes_uploaded: usize = 0;
+        let mut bytes_uploaded: u64 = 0;
         for f in job.files.iter() {
             // Check if file or directory exists
             if !f.path.exists() {
@@ -86,7 +86,7 @@ impl Run {
                         // this chunk has not been modified, skip it
                         if !chunked_file.is_empty() {
                             // Increase bytes uploaded for this run
-                            bytes_uploaded += fmd.len() as usize;
+                            bytes_uploaded += fmd.len();
                             // Push chunked file onto run's changed files
                             self.files_changed.push(chunked_file);
                             // Push logs
@@ -148,7 +148,7 @@ impl Run {
                             // Confirm the chunked file is not empty
                             if !chunked_file.is_empty() {
                                 // Increase bytes uploaded for this run
-                                bytes_uploaded += fmd.len() as usize;
+                                bytes_uploaded += fmd.len();
                                 // Push chunked file onto run's changed files
                                 self.files_changed.push(chunked_file);
                                 // Push logs
@@ -182,13 +182,7 @@ impl Run {
         // Set run metadata
         self.finished = Utc::now();
         let dur = self.finished.signed_duration_since(self.started);
-        self.time_elapsed = format!(
-            "{}d {}h {}m {}s",
-            dur.num_days(),
-            dur.num_hours(),
-            dur.num_minutes(),
-            dur.num_seconds(),
-        );
+        self.time_elapsed = pretty_duration(dur);
         self.bytes_uploaded = bytes_uploaded;
         if err == 0 && warn == 0 {
             self.status = KipStatus::OK;
@@ -216,6 +210,7 @@ impl Run {
             // Check if S3 object is within this run's changed files
             let mut path = String::new();
             for ob in bucket_objects.iter() {
+                // TODO: fix this, it's nasty
                 // pop hash off from S3 path
                 let s3_path = ob.key.clone().expect("unable to get chunk's name from S3.");
                 let mut fp: Vec<_> = s3_path.split("/").collect();
@@ -319,4 +314,27 @@ fn write_single_chunk(
         dfile.write_all(&chunk_bytes)?;
     }
     Ok(())
+}
+
+fn pretty_duration(dur: chrono::Duration) -> String {
+    let mut days = 0;
+    if dur.num_days() >= 1 {
+        days += dur.num_days();
+    }
+    let hours = dur.num_hours() - dur.num_days() * 24;
+    let mins = dur.num_minutes() - dur.num_hours() * 60;
+    let secs = dur.num_seconds() - dur.num_minutes() * 60;
+    format!("{}d {}h {}m {}s", days, hours, mins, secs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pretty_dur() {
+        let dur = chrono::Duration::seconds(93662);
+        let pd = pretty_duration(dur);
+        assert_eq!(pd, "1d 2h 1m 2s")
+    }
 }

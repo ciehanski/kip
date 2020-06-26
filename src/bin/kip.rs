@@ -33,18 +33,18 @@ async fn main() {
 
     // Create background thread to poll backup
     // interval for all jobs
-    std::thread::spawn(|| async {
-        let mut cfg = KipConf::get().unwrap_or_else(|e| {
-            terminate!(
-                5,
-                "{} failed to get kip configuration: {}.",
-                "[ERR]".red(),
-                e
-            );
-        });
-        // TODO: get the user's correct secret
-        cfg.poll_backup_jobs("").await;
-    });
+    // std::thread::spawn(|| async {
+    //     let mut cfg = KipConf::get().unwrap_or_else(|e| {
+    //         terminate!(
+    //             5,
+    //             "{} failed to get kip configuration: {}.",
+    //             "[ERR]".red(),
+    //             e
+    //         );
+    //     });
+    //     // TODO: get the user's correct secret
+    //     cfg.poll_backup_jobs("").await;
+    // });
 
     // Match user input command
     match args.subcommands {
@@ -67,16 +67,12 @@ async fn main() {
                 }
             }
             // Get secret from user input
-            print!("Please provide an encryption secret: ");
-            std::io::stdout()
-                .flush()
-                .expect("[ERR] failed to flush stdout.");
-            let mut secret = String::new();
-            std::io::stdin()
-                .read_line(&mut secret)
-                .expect("[ERR] failed to read from stdin.");
+            let secret = Password::new()
+                .with_prompt("Please provide your encryption secret")
+                .interact()
+                .expect("[ERR] failed to create encryption secret prompt.");
             // Encrypt provided secret
-            let encrypted_secret = argon_hash_secret(&secret.trim_end()).unwrap_or_else(|e| {
+            let encrypted_secret = argon_hash_secret(&secret).unwrap_or_else(|e| {
                 terminate!(5, "{} failed to encrypt secret: {}.", "[ERR]".red(), e);
             });
             // Get S3 bucket name from user input

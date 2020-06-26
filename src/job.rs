@@ -88,7 +88,6 @@ impl Job {
         let mut r = Run::new(self.total_runs + 1);
         // Set job metadata
         self.last_status = KipStatus::IN_PROGRESS;
-        self.get_file_hashes()?;
         // Tell the run to start uploading
         match r.upload(&self, secret).await {
             Ok(_) => (),
@@ -112,6 +111,7 @@ impl Job {
         env::set_var("AWS_SECRET_ACCESS_KEY", "");
         env::set_var("AWS_REGION", "");
         // Set job status
+        self.get_file_hashes()?;
         if r.status == KipStatus::WARN {
             self.last_status = KipStatus::WARN;
         } else if r.status == KipStatus::ERR {
