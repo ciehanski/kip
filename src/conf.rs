@@ -101,22 +101,24 @@ impl KipConf {
 
     pub async fn poll_backup_jobs(&mut self, secret: &str) {
         loop {
-            for (_, j) in self.jobs.iter_mut() {
-                // get last run start duration
-                let t = j
-                    .runs
-                    .get(&j.runs.len())
-                    .expect("[ERR] failed to get latest run.");
-                let dur_since_run_start = Utc::now().signed_duration_since(t.started);
-                // if the duration since the last run started is more than
-                // the configured backup interval, start an upload run
-                if dur_since_run_start.num_minutes() >= self.backup_interval as i64 {
-                    match j
-                        .run_upload(secret, &self.s3_access_key, &self.s3_secret_key)
-                        .await
-                    {
-                        Ok(_) => (),
-                        Err(e) => panic!("{}", e),
+            if !self.jobs.is_empty() {
+                for (_, j) in self.jobs.iter_mut() {
+                    // get last run start duration
+                    let t = j
+                        .runs
+                        .get(&j.runs.len())
+                        .expect("[ERR] failed to get latest run.");
+                    let dur_since_run_start = Utc::now().signed_duration_since(t.started);
+                    // if the duration since the last run started is more than
+                    // the configured backup interval, start an upload run
+                    if dur_since_run_start.num_minutes() >= self.backup_interval as i64 {
+                        match j
+                            .run_upload(secret, &self.s3_access_key, &self.s3_secret_key)
+                            .await
+                        {
+                            Ok(_) => (),
+                            Err(e) => panic!("{}", e),
+                        }
                     }
                 }
             }

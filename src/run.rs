@@ -208,7 +208,6 @@ impl Run {
         let mut counter: usize = 0;
         'outer: for fc in self.files_changed.iter() {
             // Check if S3 object is within this run's changed files
-            let mut path = String::new();
             for ob in bucket_objects.iter() {
                 // TODO: fix this, it's nasty
                 // pop hash off from S3 path
@@ -221,71 +220,85 @@ impl Run {
                     continue;
                 } else {
                     // Found! Download this chunk
-                    // TODO: fix this. if the fc is a multi-chunk file,
-                    // it will concat all the chunks paths in S3 and fail the S3
-                    // API request on download.
-                    path.push_str(&ob.key.clone().expect("unable to get chunk's name from S3."));
+                    let path = &ob.key.clone().expect("unable to get chunk's path from S3.");
+                    // Increment file counter
+                    counter += 1;
+                    // Store the returned downloaded and decrypted bytes for chunk
+                    let mut chunk_bytes: Vec<u8> = Vec::new();
+                    // Download chunk
+                    match s3_download(&path, &job.aws_bucket, job.aws_region.clone(), secret).await
+                    {
+                        Ok(cb) => {
+                            chunk_bytes = cb;
+                            println!(
+                                "[{}] {}-{} ⇉ '{}' restored successfully. ({}/{})",
+                                Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                                job.name,
+                                self.id,
+                                fc.get(hs[0])
+                                    .unwrap()
+                                    .local_path
+                                    .display()
+                                    .to_string()
+                                    .green(),
+                                counter,
+                                self.files_changed.len(),
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "[{}] {}-{} ⇉ '{}' restore failed: {}. ({}/{})",
+                                Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                                job.name,
+                                self.id,
+                                fc.get(hs[0])
+                                    .unwrap()
+                                    .local_path
+                                    .display()
+                                    .to_string()
+                                    .green(),
+                                e,
+                                counter,
+                                self.files_changed.len(),
+                            );
+                        }
+                    }
+                    // Determine if single or multi-chunk file
+                    let mut t: Vec<(&FileChunk, Vec<u8>)> = Vec::new();
+                    for (_, chunk) in fc.into_iter() {
+                        if self.is_single_chunk(chunk) {
+                            // If a single-chunk file, simply decrypt and write
+                            write_single_chunk(chunk, &chunk_bytes, &output_folder)?;
+                            continue 'outer;
+                        } else {
+                            // If a multi-chunk file:
+                            // find all chunks associated with the same path
+                            // and combine them in order according to their offsets and
+                            // lengths and then save to the original local path
+                            t.push((chunk, chunk_bytes.clone()));
+                        }
+                    }
+                    // Here, we create a vec of all chunks associated with larger,
+                    // multi-chunk files.
+                    let mut same_file_chunks = Vec::new();
+                    // while t is not empty....
+                    for (i, e) in t.iter().enumerate() {
+                        if i == t.len() - 1 {
+                            break;
+                        }
+                        if e.0.local_path == t[i + 1].0.local_path {
+                            // TODO: fix this clone
+                            same_file_chunks.push(e.clone());
+                            // TODO: pop e off of t
+                            //t.remove(i);
+                        }
+                    }
+                    // Here, we sort all the chunks by thier offset and
+                    // combine the chunks and write the file
+                    write_multi_chunk(same_file_chunks, &output_folder)?;
+                    //
                 }
             }
-            // Increment file counter
-            counter += 1;
-            // Store the returned downloaded and decrypted bytes for chunk
-            let mut chunk_bytes: Vec<u8> = Vec::new();
-            // Download chunk
-            match s3_download(&path, &job.aws_bucket, job.aws_region.clone(), secret).await {
-                Ok(cb) => {
-                    chunk_bytes = cb;
-                    println!(
-                        "[{}] {}-{} ⇉ '{}' restored successfully. ({}/{})",
-                        Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
-                        job.name,
-                        self.id,
-                        &path.to_string().green(),
-                        counter,
-                        self.files_changed.len(),
-                    );
-                }
-                Err(e) => {
-                    eprintln!(
-                        "[{}] {}-{} ⇉ '{}' restore failed: {}. ({}/{})",
-                        Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
-                        job.name,
-                        self.id,
-                        &path.to_string().red(),
-                        e,
-                        counter,
-                        self.files_changed.len(),
-                    );
-                }
-            }
-            // Write chunks to disk
-            let mut t: Vec<(&FileChunk, Vec<u8>)> = Vec::new();
-            for (_, chunk) in fc.into_iter() {
-                if self.is_single_chunk(chunk) {
-                    // If a single-chunk file, simply decrypt and write
-                    write_single_chunk(chunk, &chunk_bytes, &output_folder)?;
-                    continue 'outer;
-                } else {
-                    // If a multi-chunk file:
-                    // find all chunks associated with the same path
-                    // and combine them in order according to their offsets and
-                    // lengths and then save to the original local path
-                    t.push((chunk, chunk_bytes.clone()));
-                }
-            }
-            // Here, we have a vec of all chunks associated with larger, multi-chunk
-            // files. We'll need to split the vec
-            let mut same_file_chunks = Vec::new();
-            for (i, e) in t.iter().enumerate() {
-                if i == t.len() - 1 {
-                    break;
-                }
-                if e.0.local_path == t[i + 1].0.local_path {
-                    // TODO: fix this clone
-                    same_file_chunks.push(e.clone());
-                }
-            }
-            write_multi_chunk(same_file_chunks, &output_folder)?;
         }
         // Success
         Ok(())
