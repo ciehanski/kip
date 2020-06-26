@@ -1,5 +1,7 @@
 use crate::job::Job;
+use chrono::prelude::*;
 use dialoguer::Password;
+use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{create_dir, read, File, OpenOptions};
@@ -7,54 +9,75 @@ use std::io::prelude::*;
 use std::io::{stdin, stdout, Error};
 use std::path::Path;
 
-// TODO: use directories crate
-const KIP_CONF: &'static str = "kip_test/kip.json";
-const KIP_CONF_DIR: &'static str = "kip_test";
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct KipConf {
     pub s3_access_key: String,
     pub s3_secret_key: String,
-    pub backup_interval: usize,
+    pub backup_interval: u64,
     pub jobs: HashMap<String, Job>,
 }
 
 impl KipConf {
     pub fn new() -> Result<(), Error> {
-        if Path::new(KIP_CONF).exists() {
-            // If kip configuration already exists, just return.
-            return Ok(());
+        if let Some(proj_dirs) = ProjectDirs::from("com", "ciehanski", "kip") {
+            if proj_dirs.config_dir().join("kip.json").exists() {
+                // If kip configuration already exists, just return
+                return Ok(());
+            }
+            // Check if ~/.kip already exists
+            if !Path::new(proj_dirs.config_dir()).exists() {
+                // Create new ~/.kip dir
+                create_dir(proj_dirs.config_dir())?;
+            }
+            // Create new default kip config
+            let default_conf = KipConf {
+                s3_access_key: "".to_string(),
+                s3_secret_key: "".to_string(),
+                backup_interval: 60,
+                jobs: HashMap::<String, Job>::new(),
+            };
+            // Write default config to ~/kip/kip.json
+            let mut conf_file = File::create(proj_dirs.config_dir().join("kip.json"))?;
+            let json_conf = serde_json::to_string_pretty(&default_conf)?;
+            conf_file.write_all(json_conf.as_bytes())?;
+            Ok(())
+        } else {
+            Err(Error::new(
+                std::io::ErrorKind::NotFound,
+                "unable to determine kip configuration directory",
+            ))
         }
-        // Check if ~/.kip already exists
-        if !Path::new(KIP_CONF_DIR).exists() {
-            // Create new ~/.kip dir
-            create_dir(KIP_CONF_DIR)?;
-        }
-        // Create new default kip config
-        let default_conf = KipConf {
-            s3_access_key: "".to_string(),
-            s3_secret_key: "".to_string(),
-            backup_interval: 60,
-            jobs: HashMap::<String, Job>::new(),
-        };
-        // Write default config to ~/kip/kip.json
-        let mut conf_file = File::create(KIP_CONF)?;
-        let json_conf = serde_json::to_string_pretty(&default_conf)?;
-        conf_file.write_all(json_conf.as_bytes())?;
-        Ok(())
     }
 
     pub fn get() -> Result<KipConf, Error> {
-        let file = read(KIP_CONF)?;
-        let kc: KipConf = serde_json::from_slice(&file)?;
-        Ok(kc)
+        if let Some(proj_dirs) = ProjectDirs::from("com", "ciehanski", "kip") {
+            let file = read(proj_dirs.config_dir().join("kip.json"))?;
+            let kc: KipConf = serde_json::from_slice(&file)?;
+            Ok(kc)
+        } else {
+            Err(Error::new(
+                std::io::ErrorKind::NotFound,
+                "unable to determine kip configuration directory",
+            ))
+        }
     }
 
     pub fn save(self) -> Result<(), Error> {
-        let mut file = OpenOptions::new().write(true).open(KIP_CONF)?;
-        let json_conf = serde_json::to_string_pretty(&self)?;
-        file.write_all(json_conf.as_bytes())?;
-        Ok(())
+        if let Some(proj_dirs) = ProjectDirs::from("com", "ciehanski", "kip") {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .open(proj_dirs.config_dir().join("kip.json"))?;
+            let json_conf = serde_json::to_string_pretty(&self)?;
+            // Overwrite the conf file
+            file.set_len(0)?;
+            file.write_all(json_conf.as_bytes())?;
+            Ok(())
+        } else {
+            Err(Error::new(
+                std::io::ErrorKind::NotFound,
+                "unable to determine kip configuration directory",
+            ))
+        }
     }
 
     pub fn prompt_s3_keys(&mut self) {
@@ -77,20 +100,27 @@ impl KipConf {
         self.s3_secret_key = sec_key;
     }
 
-    pub async fn poll_backup_jobs(self, _secret: &str) {
-        // for (_, ref mut j) in self.jobs {
-        //     match j
-        //         .run_upload(secret, &self.s3_access_key, &self.s3_secret_key)
-        //         .await
-        //     {
-        //         Ok(_) => {
-        //             // Print all logs from run
-        //             for l in r.logs.iter() {
-        //                 println!("{}", l);
-        //             }
-        //         }
-        //         Err(_) => (),
-        //     }
-        // }
+    pub async fn poll_backup_jobs(&mut self, secret: &str) {
+        loop {
+            for (_, j) in self.jobs.iter_mut() {
+                // get last run start duration
+                let t = j
+                    .runs
+                    .get(&j.runs.len())
+                    .expect("[ERR] failed to get latest run.");
+                let dur_since_run_start = Utc::now().signed_duration_since(t.started);
+                // if the duration since the last run started is more than
+                // the configured backup interval, start an upload run
+                if dur_since_run_start.num_minutes() >= self.backup_interval as i64 {
+                    match j
+                        .run_upload(secret, &self.s3_access_key, &self.s3_secret_key)
+                        .await
+                    {
+                        Ok(_) => (),
+                        Err(e) => panic!("{}", e),
+                    }
+                }
+            }
+        }
     }
 }

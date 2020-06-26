@@ -49,9 +49,6 @@ pub enum Subcommands {
     Push {
         /// Name of the job you want to start
         job: String,
-        /// The password used to encrypt the backup
-        #[structopt(short = "s", long = "secret")]
-        secret: String,
     },
 
     /// Starts a restore of a job
@@ -63,9 +60,6 @@ pub enum Subcommands {
         ///
         #[structopt(short = "r", long = "run")]
         run: usize,
-        ///
-        #[structopt(short = "s", long = "secret")]
-        secret: String,
         ///
         #[structopt(short = "o", long = "output")]
         output_folder: Option<String>,

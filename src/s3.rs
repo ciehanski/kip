@@ -3,7 +3,8 @@ use crate::chunk::FileChunk;
 use crate::crypto::{decrypt, encrypt};
 use rusoto_core::Region;
 use rusoto_s3::{
-    GetObjectRequest, ListObjectsV2Request, PutObjectRequest, S3Client, StreamingBody, S3,
+    DeleteObjectRequest, GetObjectRequest, ListObjectsV2Request, PutObjectRequest, S3Client,
+    StreamingBody, S3,
 };
 use std::collections::HashMap;
 use std::error::Error;
@@ -21,14 +22,15 @@ pub async fn s3_upload(
     secret: &str,
 ) -> Result<HashMap<String, FileChunk>, Box<dyn Error>> {
     // Chunk the file
-    // TODO: don't chunk if the file hasn't changed
-    let (chunked_file, chunk_bytes) = chunk_file(&read(f)?);
+    let chunk_map = chunk_file(&read(f)?);
     // Upload each chunk
     let mut chunks = HashMap::new();
-    // TODO: remove this yucky clone. Im sorry
-    'outer: for mut chunk in chunked_file {
+    'outer: for mut chunk in chunk_map {
         // Get full path of chunked file (SHA256 hash)
-        let chunked_path = get_chunk_path(f, &chunk.hash);
+        let chunked_path = match f.parent() {
+            Some(p) => p.join(&chunk.0.hash),
+            _ => f.join(&chunk.0.hash),
+        };
         // Check S3 if this chunk aleady exists
         let s3_objs = list_s3_bucket(&aws_bucket, aws_region.clone()).await?;
         for obj in s3_objs {
@@ -41,11 +43,7 @@ pub async fn s3_upload(
             }
         }
         // Encrypt chunk
-        let bytes_index = chunked_file
-            .iter()
-            .position(|c| c == &chunk)
-            .expect("unable to get chunk bytes position.");
-        let encrypted = match encrypt(&chunk_bytes[bytes_index], secret) {
+        let encrypted = match encrypt(&chunk.1, secret) {
             Ok(ec) => ec,
             Err(e) => {
                 return Err(Box::new(std::io::Error::new(
@@ -68,9 +66,9 @@ pub async fn s3_upload(
                 ..Default::default()
             })
             .await?;
-        // Push chunk onto chunks vec
-        chunk.local_path = PathBuf::from(f).canonicalize()?;
-        chunks.insert(chunk.hash.to_string(), chunk);
+        // Push chunk onto chunks hashmap for return
+        chunk.0.local_path = PathBuf::from(f).canonicalize()?;
+        chunks.insert(chunk.0.hash.to_string(), chunk.0);
     }
     Ok(chunks)
 }
@@ -110,6 +108,22 @@ pub async fn s3_download(
     Ok(decrypted)
 }
 
+pub async fn delete_s3_object(
+    aws_bucket: &str,
+    aws_region: Region,
+    file_name: &str,
+) -> Result<(), Box<dyn Error>> {
+    let s3_client = S3Client::new(aws_region);
+    s3_client
+        .delete_object(DeleteObjectRequest {
+            bucket: aws_bucket.to_string(),
+            key: file_name.to_string(),
+            ..DeleteObjectRequest::default()
+        })
+        .await?;
+    Ok(())
+}
+
 pub async fn list_s3_bucket(
     aws_bucket: &str,
     aws_region: Region,
@@ -129,16 +143,4 @@ pub async fn list_s3_bucket(
         .into_iter()
         .collect::<Vec<_>>();
     Ok(contents)
-}
-
-fn get_chunk_path(path: &Path, new_path: &str) -> PathBuf {
-    // Split canonicalized path by folder seperator
-    let path_str = path.display().to_string();
-    let mut fp: Vec<_> = path_str.split("/").collect();
-    fp.pop().expect("failed to pop chunk's full path.");
-    let mut pp = PathBuf::new();
-    for p in fp.iter() {
-        pp = pp.join(p);
-    }
-    pp.join(new_path)
 }

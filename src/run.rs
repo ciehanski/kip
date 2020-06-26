@@ -3,6 +3,7 @@ use crate::job::{Job, KipStatus};
 use crate::s3::{list_s3_bucket, s3_download, s3_upload};
 use chrono::prelude::*;
 use colored::*;
+use crypto_hash::{hex_digest, Algorithm};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::error::Error;
@@ -28,7 +29,7 @@ impl Run {
         Run {
             id,
             started: Utc.ymd(1970, 1, 1).and_hms(0, 0, 0),
-            time_elapsed: String::from(""),
+            time_elapsed: String::from("0d 0h 0m 0s"),
             finished: Utc.ymd(1970, 1, 1).and_hms(0, 0, 0),
             bytes_uploaded: 0,
             files_changed: Vec::new(),
@@ -42,26 +43,36 @@ impl Run {
         self.started = Utc::now();
         self.status = KipStatus::IN_PROGRESS;
         // TODO: S3 by default will allow 10 concurrent requests
+        // via ThreadPool I guess?
+        let mut warn: usize = 0;
+        let mut err: usize = 0;
         let mut bytes_uploaded: usize = 0;
         for f in job.files.iter() {
             // Check if file or directory exists
-            if !f.exists() {
-                self.status = KipStatus::WARN;
+            if !f.path.exists() {
+                warn += 1;
                 self.logs.push(format!(
                     "[{}] {}-{} ⇉ '{}' can not be found.",
                     Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                     job.name,
                     self.id,
-                    f.display().to_string().red(),
+                    f.path.display().to_string().red(),
                 ));
                 continue;
             }
             // Check if f is file or directory
-            let fmd = metadata(f)?;
+            let fmd = metadata(&f.path)?;
             if fmd.is_file() {
+                // Get file hash and compare with stored file hash in
+                // KipFile. If the same, continue the loop
+                let c = std::fs::read(&f.path)?.to_vec();
+                let digest = hex_digest(Algorithm::SHA256, &c);
+                if f.hash == digest {
+                    continue;
+                }
                 // Upload
                 match s3_upload(
-                    &f.as_path().canonicalize()?,
+                    &f.path.canonicalize()?,
                     fmd.len(),
                     job.id,
                     job.aws_bucket.clone(),
@@ -71,8 +82,6 @@ impl Run {
                 .await
                 {
                     Ok(chunked_file) => {
-                        // Set run status to OK
-                        self.status = KipStatus::OK;
                         // Confirm the chunked file is not empty AKA
                         // this chunk has not been modified, skip it
                         if !chunked_file.is_empty() {
@@ -86,21 +95,21 @@ impl Run {
                                 Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                                 job.name,
                                 self.id,
-                                f.display().to_string().green(),
+                                f.path.display().to_string().green(),
                                 job.aws_bucket.clone(),
                             ));
                         }
                     }
                     Err(e) => {
                         // Set run status to ERR
-                        self.status = KipStatus::ERR;
+                        err += 1;
                         // Push logs
                         self.logs.push(format!(
                             "[{}] {}-{} ⇉ '{}' upload failed: {}.",
                             Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                             job.name,
                             self.id,
-                            f.display().to_string().red(),
+                            f.path.display().to_string().red(),
                             e,
                         ));
                     }
@@ -109,12 +118,19 @@ impl Run {
                 // If the listed file entry is a dir, use walkdir to
                 // walk all the recursive directories as well. Upload
                 // all files found within the directory.
-                for entry in WalkDir::new(f) {
+                for entry in WalkDir::new(&f.path) {
                     let entry = entry?;
                     // If a directory, skip since upload will
                     // create the parent folder by default
                     let fmd = metadata(entry.path())?;
                     if fmd.is_dir() {
+                        continue;
+                    }
+                    // Get file hash and compare with stored file hash in
+                    // KipFile. If the same, continue the loop
+                    let c = std::fs::read(entry.path())?.to_vec();
+                    let digest = hex_digest(Algorithm::SHA256, &c);
+                    if f.hash == digest {
                         continue;
                     }
                     // Upload
@@ -129,8 +145,6 @@ impl Run {
                     .await
                     {
                         Ok(chunked_file) => {
-                            // Set run status to OK
-                            self.status = KipStatus::OK;
                             // Confirm the chunked file is not empty
                             if !chunked_file.is_empty() {
                                 // Increase bytes uploaded for this run
@@ -150,7 +164,7 @@ impl Run {
                         }
                         Err(e) => {
                             // Set run status to ERR
-                            self.status = KipStatus::ERR;
+                            err += 1;
                             // Push logs
                             self.logs.push(format!(
                                 "[{}] {}-{} ⇉ '{}' upload failed: {}.",
@@ -176,7 +190,13 @@ impl Run {
             dur.num_seconds(),
         );
         self.bytes_uploaded = bytes_uploaded;
-        // Done
+        if err == 0 && warn == 0 {
+            self.status = KipStatus::OK;
+        } else if warn > 0 && err == 0 {
+            self.status = KipStatus::WARN;
+        } else {
+            self.status = KipStatus::ERR;
+        }
         Ok(())
     }
 
@@ -194,7 +214,7 @@ impl Run {
         let mut counter: usize = 0;
         for fc in self.files_changed.iter() {
             // Check if S3 object is within this run's changed files
-            let mut path = String::from("");
+            let mut path = String::new();
             for ob in bucket_objects.iter() {
                 // pop hash off from S3 path
                 let s3_path = ob.key.clone().expect("unable to get chunk's name from S3.");

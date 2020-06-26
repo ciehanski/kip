@@ -1,12 +1,13 @@
 use crate::run::Run;
 use chrono::prelude::*;
 use colored::*;
+use crypto_hash::{hex_digest, Algorithm};
 use rusoto_core::Region;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
 use std::error::Error;
-use std::fmt;
+use std::fs::read;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 use walkdir::WalkDir;
@@ -15,9 +16,10 @@ use walkdir::WalkDir;
 pub struct Job {
     pub id: Uuid,
     pub name: String,
+    pub secret: String,
     pub aws_bucket: String,
     pub aws_region: Region,
-    pub files: Vec<PathBuf>,
+    pub files: Vec<KipFile>,
     pub files_amt: usize,
     pub runs: HashMap<usize, Run>,
     pub first_run: DateTime<Utc>,
@@ -27,36 +29,15 @@ pub struct Job {
     pub created: DateTime<Utc>,
 }
 
-#[allow(non_camel_case_types)]
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub enum KipStatus {
-    OK,
-    ERR,
-    WARN,
-    IN_PROGRESS,
-    NEVER_RUN,
-}
-
-impl fmt::Display for KipStatus {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            KipStatus::OK => write!(f, "OK"),
-            KipStatus::ERR => write!(f, "ERR"),
-            KipStatus::WARN => write!(f, "WARN"),
-            KipStatus::IN_PROGRESS => write!(f, "IN_PROGRESS"),
-            KipStatus::NEVER_RUN => write!(f, "NEVER_RUN"),
-        }
-    }
-}
-
 impl Job {
-    pub fn new(name: &str, aws_bucket: &str, aws_region: &str) -> Self {
+    pub fn new(name: &str, secret: &str, aws_bucket: &str, aws_region: &str) -> Self {
         Job {
             id: Uuid::new_v4(),
             name: name.to_string(),
+            secret: secret.to_string(),
             aws_bucket: aws_bucket.to_string(),
             aws_region: Job::parse_s3_region(aws_region),
-            files: Vec::<PathBuf>::new(),
+            files: Vec::new(),
             files_amt: 0,
             runs: HashMap::new(),
             first_run: Utc.ymd(1970, 1, 1).and_hms(0, 0, 0),
@@ -93,26 +74,6 @@ impl Job {
         }
     }
 
-    // Get correct number of files in job (not just...
-    // entries within 'files')
-    pub fn get_files_amt(&self) -> Result<usize, Box<dyn Error>> {
-        let mut correct_files_num: usize = 0;
-        for f in self.files.iter() {
-            if f.exists() && f.is_dir() {
-                for entry in WalkDir::new(f) {
-                    let entry = entry?;
-                    if Path::is_dir(entry.path()) {
-                        continue;
-                    }
-                    correct_files_num += 1;
-                }
-            } else if f.exists() {
-                correct_files_num += 1;
-            }
-        }
-        Ok(correct_files_num)
-    }
-
     pub async fn run_upload(
         &mut self,
         secret: &str,
@@ -127,11 +88,12 @@ impl Job {
         let mut r = Run::new(self.total_runs + 1);
         // Set job metadata
         self.last_status = KipStatus::IN_PROGRESS;
+        self.get_file_hashes()?;
         // Tell the run to start uploading
         match r.upload(&self, secret).await {
             Ok(_) => (),
             Err(e) => {
-                self.last_status = KipStatus::ERR;
+                r.status = KipStatus::ERR;
                 // Add run to job
                 self.runs.insert(r.id, r);
                 self.total_runs += 1;
@@ -141,12 +103,7 @@ impl Job {
                 }
                 return Err(Box::new(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
-                    format!(
-                        "{} failed to restore '{}': {}.",
-                        "[ERR]".red(),
-                        &self.name,
-                        e
-                    ),
+                    format!("{}.", e),
                 )));
             }
         };
@@ -199,12 +156,7 @@ impl Job {
             None => {
                 return Err(Box::new(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
-                    format!(
-                        "{} failed to restore '{}': couldn't find run {}.",
-                        "[ERR]".red(),
-                        &self.name,
-                        run
-                    ),
+                    format!("couldn't find run {}.", run),
                 )));
             }
         };
@@ -214,12 +166,7 @@ impl Job {
             Err(e) => {
                 return Err(Box::new(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
-                    format!(
-                        "{} failed to restore '{}': {}.",
-                        "[ERR]".red(),
-                        &self.name,
-                        e
-                    ),
+                    format!("{}.", e),
                 )));
             }
         };
@@ -233,5 +180,85 @@ impl Job {
 
     pub fn abort(&mut self) {
         unimplemented!();
+    }
+
+    // Get correct number of files in job (not just...
+    // entries within 'files')
+    pub fn get_files_amt(&self) -> Result<usize, Box<dyn Error>> {
+        let mut correct_files_num: usize = 0;
+        for f in self.files.iter() {
+            if f.path.exists() && f.path.is_dir() {
+                for entry in WalkDir::new(&f.path) {
+                    let entry = entry?;
+                    if Path::is_dir(entry.path()) {
+                        continue;
+                    }
+                    correct_files_num += 1;
+                }
+            } else if f.path.exists() {
+                correct_files_num += 1;
+            }
+        }
+        Ok(correct_files_num)
+    }
+
+    fn get_file_hashes(&mut self) -> Result<(), Box<dyn Error>> {
+        for f in self.files.iter_mut() {
+            // File
+            if std::fs::metadata(&f.path)?.is_file() {
+                let c = read(&f.path)?.to_vec();
+                let digest = hex_digest(Algorithm::SHA256, &c);
+                f.hash = digest;
+            } else {
+                // Directory
+                for entry in WalkDir::new(&f.path) {
+                    let entry = entry?;
+                    if entry.metadata()?.is_dir() {
+                        continue;
+                    }
+                    let c = read(&entry.path())?.to_vec();
+                    let digest = hex_digest(Algorithm::SHA256, &c);
+                    f.hash = digest;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[allow(non_camel_case_types)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub enum KipStatus {
+    OK,
+    ERR,
+    WARN,
+    IN_PROGRESS,
+    NEVER_RUN,
+}
+
+impl std::fmt::Display for KipStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            KipStatus::OK => write!(f, "OK"),
+            KipStatus::ERR => write!(f, "ERR"),
+            KipStatus::WARN => write!(f, "WARN"),
+            KipStatus::IN_PROGRESS => write!(f, "IN_PROGRESS"),
+            KipStatus::NEVER_RUN => write!(f, "NEVER_RUN"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct KipFile {
+    pub path: PathBuf,
+    pub hash: String,
+}
+
+impl KipFile {
+    pub fn new(path: PathBuf) -> Self {
+        KipFile {
+            path,
+            hash: String::new(),
+        }
     }
 }

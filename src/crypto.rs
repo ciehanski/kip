@@ -1,4 +1,5 @@
 use aead::{generic_array::GenericArray, Aead, NewAead};
+use argon2::{self, Config, ThreadMode, Variant, Version};
 use chacha20poly1305::XChaCha20Poly1305;
 use rand::rngs::OsRng;
 use rand::Rng;
@@ -12,7 +13,7 @@ pub fn encrypt(plaintext: &[u8], secret: &str) -> Result<Vec<u8>, aead::Error> {
     // New XChaCha20Poly1305 from hashed_secret
     let aead = XChaCha20Poly1305::new(key);
     // Generate nonce - 24-bytes; unique
-    let nonce_str = generate_nonce();
+    let nonce_str = generate_nonce(24);
     let nonce = GenericArray::from_slice(nonce_str.as_bytes());
     // Encrypt
     let mut ciphertext = aead.encrypt(nonce, plaintext.as_ref())?;
@@ -38,6 +39,33 @@ pub fn decrypt(ciphertext: &[u8], secret: &str) -> Result<Vec<u8>, aead::Error> 
     Ok(plaintext)
 }
 
+pub fn argon_hash_secret(secret: &str) -> Result<String, argon2::Error> {
+    // Generate a 16-byte salt
+    let salt = generate_nonce(16);
+    // Configure argon2 parameters
+    let config = Config {
+        variant: Variant::Argon2id,
+        version: Version::Version13,
+        mem_cost: 65536,
+        time_cost: 1,
+        lanes: 4,
+        thread_mode: ThreadMode::Parallel,
+        secret: &[],
+        ad: &[],
+        hash_length: 32,
+    };
+    // Generate hash from secret, salt, and argon2 config
+    let hash = argon2::hash_encoded(secret.as_bytes(), salt.as_bytes(), &config)?;
+    // Ship it
+    Ok(hash)
+}
+
+pub fn compare_argon_secret(secret: &str, hash: &str) -> Result<bool, argon2::Error> {
+    let matches = argon2::verify_encoded(&hash, secret.as_bytes())?;
+    Ok(matches)
+}
+
+// Generates a 32-byte hash of a provided secret.
 fn hash_secret(secret: &str) -> GenericArray<u8, U32> {
     // Create a SHA3-256 digest
     let mut hasher = Sha3_256::new();
@@ -48,11 +76,11 @@ fn hash_secret(secret: &str) -> GenericArray<u8, U32> {
 }
 
 // Generates a 24-byte string of random numbers.
-fn generate_nonce() -> String {
+fn generate_nonce(len: usize) -> String {
     // Loop 24 times to create 24-byte String of random numbers.
     // Use OsRng to generate more "secure" random randomness.
     let mut nonce = String::new();
-    for _ in 0..24 {
+    for _ in 0..len {
         let rn = OsRng.gen_range(0, 9);
         nonce.push_str(&rn.to_string());
     }
@@ -82,7 +110,7 @@ mod tests {
 
     #[test]
     fn test_generate_nonce() {
-        let t = generate_nonce();
+        let t = generate_nonce(24);
         assert_eq!(t.len(), 24);
     }
 
@@ -112,5 +140,27 @@ mod tests {
             std::str::from_utf8(&de).expect("failed to convert utf-8 to str"),
             "Super secure information. Please do not share or read."
         )
+    }
+
+    #[test]
+    fn test_extract_nonce() {
+        let encrypted = encrypt(
+            b"Super secure information. Please do not share or read.",
+            "hunter2",
+        )
+        .unwrap();
+        let (nonce, _) = extract_nonce(&encrypted);
+        assert_eq!(nonce.len(), 24);
+        let decrypted = decrypt(&encrypted, "hunter2").unwrap();
+        assert_eq!(
+            std::str::from_utf8(&decrypted).expect("failed to convert utf-8 to str"),
+            "Super secure information. Please do not share or read."
+        )
+    }
+
+    #[test]
+    fn test_argon() {
+        let hash = argon_hash_secret("hunter2").expect("should encrypt");
+        assert!(compare_argon_secret("hunter2", &hash).unwrap())
     }
 }
