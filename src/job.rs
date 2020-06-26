@@ -262,3 +262,36 @@ impl KipFile {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_files_amt() {
+        let mut j = Job::new("test1", "hunter2", "testing1", "us-east-1");
+        j.files.push(KipFile::new(PathBuf::from(
+            "/Users/Ryan/Documents/RustProjects/kip/src",
+        )));
+        j.files.push(KipFile::new(PathBuf::from(
+            "/Users/Ryan/Documents/RustProjects/kip/Cargo.toml",
+        )));
+        j.files.push(KipFile::new(PathBuf::from(
+            "/Users/Ryan/Documents/RustProjects/kip/Cargo.lock",
+        )));
+        assert_eq!(j.get_files_amt().unwrap(), 12)
+    }
+
+    #[test]
+    fn test_get_file_hashes() {
+        let mut j = Job::new("test1", "hunter2", "testing1", "us-east-1");
+        j.files.push(KipFile::new(PathBuf::from(
+            "/Users/Ryan/Documents/RustProjects/kip/src",
+        )));
+        j.get_file_hashes().unwrap();
+        assert_eq!(
+            j.files[0].hash,
+            "2c9898c3bc261aaa70bddc9f679181623ceaf8be02046c32aad2b7296373eaf1"
+        )
+    }
+}

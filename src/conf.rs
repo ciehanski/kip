@@ -91,7 +91,6 @@ impl KipConf {
             .read_line(&mut acc_key)
             .expect("[ERR] failed to read from stdin");
         self.s3_access_key = String::from(acc_key.trim_end());
-
         // Get S3 secret key from user input
         let sec_key = Password::new()
             .with_prompt("Please provide your S3 secret key")

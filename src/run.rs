@@ -330,6 +330,26 @@ fn pretty_duration(dur: chrono::Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chunk::chunk_file;
+    use std::fs::read;
+
+    #[test]
+    fn test_is_single_chunk() {
+        let mut r = Run::new(9999);
+        let f = read(&std::path::PathBuf::from(
+            "/Users/Ryan/Documents/ciehanski.com/index.html",
+        ))
+        .unwrap();
+        let chunk_hmap = chunk_file(&f);
+        let mut t = HashMap::new();
+        let mut fc = FileChunk::new("", 0, 0, 0);
+        for c in chunk_hmap {
+            t.insert(c.0.hash.clone(), c.0.clone());
+            fc = c.0;
+        }
+        r.files_changed.push(t);
+        assert!(r.is_single_chunk(&fc))
+    }
 
     #[test]
     fn test_pretty_dur() {
