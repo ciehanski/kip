@@ -7,7 +7,7 @@ use crypto_hash::{hex_digest, Algorithm};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::error::Error;
-use std::fs::{metadata, File};
+use std::fs::{metadata, File, OpenOptions};
 use std::io::prelude::*;
 use std::path::Path;
 use walkdir::WalkDir;
@@ -206,7 +206,7 @@ impl Run {
         let output_folder = output_folder.unwrap_or_default();
         // For each object in the bucket, download it
         let mut counter: usize = 0;
-        for fc in self.files_changed.iter() {
+        'outer: for fc in self.files_changed.iter() {
             // Check if S3 object is within this run's changed files
             let mut path = String::new();
             for ob in bucket_objects.iter() {
@@ -221,6 +221,9 @@ impl Run {
                     continue;
                 } else {
                     // Found! Download this chunk
+                    // TODO: fix this. if the fc is a multi-chunk file,
+                    // it will concat all the chunks paths in S3 and fail the S3
+                    // API request on download.
                     path.push_str(&ob.key.clone().expect("unable to get chunk's name from S3."));
                 }
             }
@@ -259,18 +262,30 @@ impl Run {
             let mut t: Vec<(&FileChunk, Vec<u8>)> = Vec::new();
             for (_, chunk) in fc.into_iter() {
                 if self.is_single_chunk(chunk) {
+                    // If a single-chunk file, simply decrypt and write
                     write_single_chunk(chunk, &chunk_bytes, &output_folder)?;
+                    continue 'outer;
                 } else {
+                    // If a multi-chunk file:
                     // find all chunks associated with the same path
-                    // and combine them according to their offsets and
+                    // and combine them in order according to their offsets and
                     // lengths and then save to the original local path
                     t.push((chunk, chunk_bytes.clone()));
                 }
             }
-            // let t = t.sort_by(|a, b| b.0.local_path.cmp(&a.0.local_path));
-            // println!("{:?}", t);
-            // let b = t.windows(2).all(|c| c[0].0.local_path == c[1].0.local_path);
-            // println!("{:?}", b);
+            // Here, we have a vec of all chunks associated with larger, multi-chunk
+            // files. We'll need to split the vec
+            let mut same_file_chunks = Vec::new();
+            for (i, e) in t.iter().enumerate() {
+                if i == t.len() - 1 {
+                    break;
+                }
+                if e.0.local_path == t[i + 1].0.local_path {
+                    // TODO: fix this clone
+                    same_file_chunks.push(e.clone());
+                }
+            }
+            write_multi_chunk(same_file_chunks, &output_folder)?;
         }
         // Success
         Ok(())
@@ -310,9 +325,48 @@ fn write_single_chunk(
         let mut dfile = File::create(Path::new(&output_folder).join(correct_chunk_path))?;
         dfile.write_all(&chunk_bytes)?;
     } else {
-        let mut dfile = File::open(Path::new(&output_folder).join(correct_chunk_path))?;
+        let mut dfile = OpenOptions::new()
+            .write(true)
+            .open(Path::new(&output_folder).join(correct_chunk_path))?;
         dfile.write_all(&chunk_bytes)?;
     }
+    Ok(())
+}
+
+fn write_multi_chunk(
+    mut chunks: Vec<(&FileChunk, Vec<u8>)>,
+    output_folder: &str,
+) -> Result<(), Box<dyn Error>> {
+    // Get path for chunks
+    let path = chunks[0].0.local_path.clone();
+    // Sort all chunks by offset length
+    chunks.sort_by(|a, b| a.0.offset.cmp(&b.0.offset));
+    // Write all chunk bytes into final collection of bytes
+    let mut file_bytes = Vec::<u8>::new();
+    for chunk in chunks {
+        for byte in chunk.1 {
+            file_bytes.push(byte);
+        }
+    }
+    // Create parent directory if missing
+    let correct_chunk_path = path.strip_prefix("/")?;
+    let folder_path = Path::new(&output_folder).join(correct_chunk_path);
+    let folder_parent = match folder_path.parent() {
+        Some(p) => p,
+        _ => &folder_path,
+    };
+    std::fs::create_dir_all(folder_parent)?;
+    // Create the file
+    if !Path::new(&output_folder).join(correct_chunk_path).exists() {
+        let mut dfile = File::create(Path::new(&output_folder).join(correct_chunk_path))?;
+        dfile.write_all(&file_bytes)?;
+    } else {
+        let mut dfile = OpenOptions::new()
+            .write(true)
+            .open(Path::new(&output_folder).join(correct_chunk_path))?;
+        dfile.write_all(&file_bytes)?;
+    }
+    // Create the file
     Ok(())
 }
 
