@@ -4,6 +4,7 @@ use crate::s3::{list_s3_bucket, s3_download, s3_upload};
 use chrono::prelude::*;
 use colored::*;
 use crypto_hash::{hex_digest, Algorithm};
+use humantime::format_duration;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::error::Error;
@@ -181,8 +182,8 @@ impl Run {
         }
         // Set run metadata
         self.finished = Utc::now();
-        let dur = self.finished.signed_duration_since(self.started);
-        self.time_elapsed = pretty_duration(dur);
+        let dur = self.finished.signed_duration_since(self.started).to_std()?;
+        self.time_elapsed = format_duration(dur).to_string();
         self.bytes_uploaded = bytes_uploaded;
         if err == 0 && warn == 0 {
             self.status = KipStatus::OK;
@@ -209,24 +210,37 @@ impl Run {
         'outer: for fc in self.files_changed.iter() {
             // Check if S3 object is within this run's changed files
             for ob in bucket_objects.iter() {
-                // TODO: fix this, it's nasty
-                // pop hash off from S3 path
-                let s3_path = ob.key.clone().expect("unable to get chunk's name from S3.");
-                let mut fp: Vec<_> = s3_path.split("/").collect();
-                let hash = fp.pop().expect("failed to pop chunk's S3 path.");
-                let hs: Vec<_> = hash.split(".").collect();
-                if !fc.contains_key(hs[0]) {
+                let s3_key = match ob.key.clone() {
+                    Some(k) => k,
+                    _ => {
+                        return Err(Box::new(std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            "unable to get bucket object's S3 path.",
+                        )))
+                    }
+                };
+                let hash = strip_hash_from_s3(&s3_key)?;
+                if !fc.contains_key(&hash) {
                     // S3 object not found in this run
                     continue;
                 } else {
                     // Found! Download this chunk
-                    let path = &ob.key.clone().expect("unable to get chunk's path from S3.");
                     // Increment file counter
                     counter += 1;
+                    let local_path = match fc.get(&hash) {
+                        Some(c) => c.local_path.display().to_string().green(),
+                        _ => {
+                            return Err(Box::new(std::io::Error::new(
+                                std::io::ErrorKind::NotFound,
+                                "unable to get chunk's local path.",
+                            )))
+                        }
+                    };
                     // Store the returned downloaded and decrypted bytes for chunk
                     let mut chunk_bytes: Vec<u8> = Vec::new();
                     // Download chunk
-                    match s3_download(&path, &job.aws_bucket, job.aws_region.clone(), secret).await
+                    match s3_download(&s3_key, &job.aws_bucket, job.aws_region.clone(), secret)
+                        .await
                     {
                         Ok(cb) => {
                             chunk_bytes = cb;
@@ -235,12 +249,7 @@ impl Run {
                                 Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                                 job.name,
                                 self.id,
-                                fc.get(hs[0])
-                                    .unwrap()
-                                    .local_path
-                                    .display()
-                                    .to_string()
-                                    .green(),
+                                local_path,
                                 counter,
                                 self.files_changed.len(),
                             );
@@ -251,12 +260,7 @@ impl Run {
                                 Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                                 job.name,
                                 self.id,
-                                fc.get(hs[0])
-                                    .unwrap()
-                                    .local_path
-                                    .display()
-                                    .to_string()
-                                    .green(),
+                                local_path,
                                 e,
                                 counter,
                                 self.files_changed.len(),
@@ -264,46 +268,44 @@ impl Run {
                         }
                     }
                     // Determine if single or multi-chunk file
-                    let mut t: Vec<(&FileChunk, Vec<u8>)> = Vec::new();
+                    let mut multi_chunks: Vec<(&FileChunk, &[u8])> = Vec::new();
                     for (_, chunk) in fc.into_iter() {
                         if self.is_single_chunk(chunk) {
                             // If a single-chunk file, simply decrypt and write
-                            write_single_chunk(chunk, &chunk_bytes, &output_folder)?;
+                            write_chunk(&chunk.local_path, &chunk_bytes, &output_folder)?;
                             continue 'outer;
                         } else {
-                            // If a multi-chunk file:
-                            // find all chunks associated with the same path
-                            // and combine them in order according to their offsets and
-                            // lengths and then save to the original local path
-                            t.push((chunk, chunk_bytes.clone()));
+                            // If a multi-chunk file pass to multi-chunk vec
+                            multi_chunks.push((chunk, &chunk_bytes));
                         }
                     }
                     // Here, we create a vec of all chunks associated with larger,
-                    // multi-chunk files.
-                    let mut same_file_chunks = Vec::new();
-                    // while t is not empty....
-                    for (i, e) in t.iter().enumerate() {
-                        if i == t.len() - 1 {
-                            break;
+                    // multi-chunk files. Loops until all files and their chunks
+                    // have been sorted and written to disk.
+                    let mut mc_len: usize = multi_chunks.len();
+                    while mc_len != 0 {
+                        let mut same_file_chunks = Vec::new();
+                        for (i, c) in multi_chunks.iter().enumerate() {
+                            if i == multi_chunks.len() - 1 || mc_len == 0 {
+                                break;
+                            }
+                            if c.0.local_path == multi_chunks[i + 1].0.local_path {
+                                same_file_chunks.push(*c);
+                                mc_len -= 1;
+                            }
                         }
-                        if e.0.local_path == t[i + 1].0.local_path {
-                            // TODO: fix this clone
-                            same_file_chunks.push(e.clone());
-                            // TODO: pop e off of t
-                            //t.remove(i);
-                        }
+                        // Here, we sort all the chunks by thier offset and
+                        // combine the chunks and write the file
+                        assemble_chunks(same_file_chunks, &output_folder)?;
                     }
-                    // Here, we sort all the chunks by thier offset and
-                    // combine the chunks and write the file
-                    write_multi_chunk(same_file_chunks, &output_folder)?;
-                    //
                 }
             }
         }
-        // Success
         Ok(())
     }
 
+    // Checks if a certain file backed up in a specific run
+    // was split into a single or multiple chunks.
     fn is_single_chunk(&self, fc: &FileChunk) -> bool {
         let mut count: usize = 0;
         for cf in self.files_changed.iter().into_iter() {
@@ -320,13 +322,14 @@ impl Run {
     }
 }
 
-fn write_single_chunk(
-    chunk: &FileChunk,
+// Takes a FileChunk's bytes and writes them to disk.
+fn write_chunk(
+    chunk_path: &Path,
     chunk_bytes: &[u8],
     output_folder: &str,
 ) -> Result<(), Box<dyn Error>> {
     // Create parent directory if missing
-    let correct_chunk_path = chunk.local_path.strip_prefix("/")?;
+    let correct_chunk_path = chunk_path.strip_prefix("/")?;
     let folder_path = Path::new(&output_folder).join(correct_chunk_path);
     let folder_parent = match folder_path.parent() {
         Some(p) => p,
@@ -346,52 +349,51 @@ fn write_single_chunk(
     Ok(())
 }
 
-fn write_multi_chunk(
-    mut chunks: Vec<(&FileChunk, Vec<u8>)>,
+// TODO: file sizes seem to be doubled when restoring
+// multi-chunk files
+// Find all chunks associated with the same path
+// and combine them in order according to their offsets and
+// lengths and then save to the original local path
+fn assemble_chunks(
+    mut chunks: Vec<(&FileChunk, &[u8])>,
     output_folder: &str,
 ) -> Result<(), Box<dyn Error>> {
     // Get path for chunks
     let path = chunks[0].0.local_path.clone();
-    // Sort all chunks by offset length
+    // Sort all chunks by their offset
+    // TODO: this sort isn't working for some reason. On music
+    // files for instance, portions of the song are out of order
+    // or repeated. The correct length remains intact, however.
     chunks.sort_by(|a, b| a.0.offset.cmp(&b.0.offset));
     // Write all chunk bytes into final collection of bytes
     let mut file_bytes = Vec::<u8>::new();
-    for chunk in chunks {
-        for byte in chunk.1 {
-            file_bytes.push(byte);
-        }
+    for chunk in chunks.iter_mut() {
+        file_bytes.append(&mut chunk.1.to_vec());
     }
-    // Create parent directory if missing
-    let correct_chunk_path = path.strip_prefix("/")?;
-    let folder_path = Path::new(&output_folder).join(correct_chunk_path);
-    let folder_parent = match folder_path.parent() {
-        Some(p) => p,
-        _ => &folder_path,
-    };
-    std::fs::create_dir_all(folder_parent)?;
-    // Create the file
-    if !Path::new(&output_folder).join(correct_chunk_path).exists() {
-        let mut dfile = File::create(Path::new(&output_folder).join(correct_chunk_path))?;
-        dfile.write_all(&file_bytes)?;
-    } else {
-        let mut dfile = OpenOptions::new()
-            .write(true)
-            .open(Path::new(&output_folder).join(correct_chunk_path))?;
-        dfile.write_all(&file_bytes)?;
-    }
+    // Write the file
+    write_chunk(&path, &file_bytes, &output_folder)?;
     // Create the file
     Ok(())
 }
 
-fn pretty_duration(dur: chrono::Duration) -> String {
-    let mut days = 0;
-    if dur.num_days() >= 1 {
-        days += dur.num_days();
-    }
-    let hours = dur.num_hours() - dur.num_days() * 24;
-    let mins = dur.num_minutes() - dur.num_hours() * 60;
-    let secs = dur.num_seconds() - dur.num_minutes() * 60;
-    format!("{}d {}h {}m {}s", days, hours, mins, secs)
+fn strip_hash_from_s3(s3_path: &str) -> Result<String, std::io::Error> {
+    // Pop hash off from S3 path
+    let mut fp: Vec<_> = s3_path.split("/").collect();
+    let hdt = match fp.pop() {
+        Some(h) => h,
+        _ => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "failed to pop chunk's S3 path.",
+            ))
+        }
+    };
+    // Split the 902938470293847392033874592038473.chunk
+    let hs: Vec<_> = hdt.split(".").collect();
+    // Just grab the first split, which is the hash
+    let hash = hs[0].to_string();
+    // Ship it
+    Ok(hash)
 }
 
 #[cfg(test)]
@@ -419,9 +421,12 @@ mod tests {
     }
 
     #[test]
-    fn test_pretty_dur() {
-        let dur = chrono::Duration::seconds(93662);
-        let pd = pretty_duration(dur);
-        assert_eq!(pd, "1d 2h 1m 2s")
+    fn test_strip_hash_from_s3() {
+        // Split the 902938470293847392033874592038473.chunk
+        let hash = strip_hash_from_s3("f339aae7-e994-4fb4-b6aa-623681df99aa/chunks/001d46082763b930e5b9f0c52d16841b443bfbcd52af6cd475cb0182548da33a.chunk").unwrap();
+        assert_eq!(
+            hash,
+            "001d46082763b930e5b9f0c52d16841b443bfbcd52af6cd475cb0182548da33a"
+        )
     }
 }

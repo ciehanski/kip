@@ -26,6 +26,7 @@ crypto-hash = "0.3.4"
 pretty-bytes = "0.2.2"
 rust-argon2 = "0.8.2"
 directories = "2.0"
+humantime = "2.0.1"
 
 [lib]
 name = "kip"

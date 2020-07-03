@@ -47,7 +47,7 @@ pub fn argon_hash_secret(secret: &str) -> Result<String, argon2::Error> {
         variant: Variant::Argon2id,
         version: Version::Version13,
         mem_cost: 65536,
-        time_cost: 1,
+        time_cost: 2,
         lanes: 4,
         thread_mode: ThreadMode::Parallel,
         secret: &[],

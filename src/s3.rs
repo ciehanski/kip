@@ -26,18 +26,13 @@ pub async fn s3_upload(
     // Upload each chunk
     let mut chunks = HashMap::new();
     'outer: for mut chunk in chunk_map {
-        // Get full path of chunked file (SHA256 hash)
-        let chunked_path = match f.parent() {
-            Some(p) => p.join(&chunk.0.hash),
-            _ => f.join(&chunk.0.hash),
-        };
         // Check S3 if this chunk aleady exists
         let s3_objs = list_s3_bucket(&aws_bucket, aws_region.clone()).await?;
         for obj in s3_objs {
             if obj
                 .key
                 .expect("unable to get chunk's name from S3.")
-                .contains(&chunked_path.display().to_string())
+                .contains(&chunk.0.hash)
             {
                 continue 'outer;
             }
@@ -56,11 +51,7 @@ pub async fn s3_upload(
         s3_client
             .put_object(PutObjectRequest {
                 bucket: aws_bucket.clone(),
-                key: format!(
-                    "{}{}.chunk",
-                    job_id,
-                    chunked_path.as_path().display().to_string()
-                ),
+                key: format!("{}/chunks/{}.chunk", job_id, chunk.0.hash,),
                 content_length: Some(fmd_len as i64),
                 body: Some(StreamingBody::from(encrypted)),
                 ..Default::default()
@@ -137,10 +128,14 @@ pub async fn list_s3_bucket(
         .await?;
     // Convert S3 result into Vec<S3::Object> which can
     // be used to manipulate the list of files in S3.
-    let contents = result
-        .contents
-        .unwrap_or_default()
-        .into_iter()
-        .collect::<Vec<_>>();
+    let contents = match result.contents {
+        Some(c) => c.into_iter().collect::<Vec<_>>(),
+        _ => {
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "bucket is empty.",
+            )));
+        }
+    };
     Ok(contents)
 }

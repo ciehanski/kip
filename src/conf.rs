@@ -84,32 +84,34 @@ impl KipConf {
         // If user has not provided S3 credentials or this is
         // their first time using kip
         // Get S3 access key from user input
-        print!("Please provide your S3 access key: ");
-        stdout().flush().expect("[ERR] failed to flush stdout.");
-        let mut acc_key = String::new();
-        stdin()
-            .read_line(&mut acc_key)
-            .expect("[ERR] failed to read from stdin");
-        self.s3_access_key = String::from(acc_key.trim_end());
-        // Get S3 secret key from user input
-        let sec_key = Password::new()
-            .with_prompt("Please provide your S3 secret key")
-            .interact()
-            .expect("[ERR] failed to create S3 secret key prompt.");
-        self.s3_secret_key = sec_key;
+        if self.s3_access_key.is_empty() || self.s3_secret_key.is_empty() {
+            print!("Please provide your S3 access key: ");
+            stdout().flush().expect("[ERR] failed to flush stdout.");
+            let mut acc_key = String::new();
+            stdin()
+                .read_line(&mut acc_key)
+                .expect("[ERR] failed to read from stdin");
+            self.s3_access_key = String::from(acc_key.trim_end());
+            // Get S3 secret key from user input
+            let sec_key = Password::new()
+                .with_prompt("Please provide your S3 secret key")
+                .interact()
+                .expect("[ERR] failed to create S3 secret key prompt.");
+            self.s3_secret_key = sec_key;
+        }
     }
 
     pub async fn poll_backup_jobs(&mut self, secret: &str) {
         loop {
             if !self.jobs.is_empty() {
                 for (_, j) in self.jobs.iter_mut() {
-                    // get last run start duration
-                    let t = j
+                    // Get last run start duration
+                    let run = j
                         .runs
                         .get(&j.runs.len())
                         .expect("[ERR] failed to get latest run.");
-                    let dur_since_run_start = Utc::now().signed_duration_since(t.started);
-                    // if the duration since the last run started is more than
+                    let dur_since_run_start = Utc::now().signed_duration_since(run.started);
+                    // If the duration since the last run started is more than
                     // the configured backup interval, start an upload run
                     if dur_since_run_start.num_minutes() >= self.backup_interval as i64 {
                         match j
