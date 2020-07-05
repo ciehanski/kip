@@ -269,7 +269,7 @@ impl Run {
                     }
                     // Determine if single or multi-chunk file
                     let mut multi_chunks: Vec<(&FileChunk, &[u8])> = Vec::new();
-                    for (_, chunk) in fc.into_iter() {
+                    for (_, chunk) in fc.iter() {
                         if self.is_single_chunk(chunk) {
                             // If a single-chunk file, simply decrypt and write
                             write_chunk(&chunk.local_path, &chunk_bytes, &output_folder)?;
@@ -309,7 +309,7 @@ impl Run {
     fn is_single_chunk(&self, fc: &FileChunk) -> bool {
         let mut count: usize = 0;
         for cf in self.files_changed.iter().into_iter() {
-            for (_, c) in cf {
+            for c in cf.values() {
                 if c.local_path == fc.local_path {
                     count += 1;
                 }
@@ -378,7 +378,7 @@ fn assemble_chunks(
 
 fn strip_hash_from_s3(s3_path: &str) -> Result<String, std::io::Error> {
     // Pop hash off from S3 path
-    let mut fp: Vec<_> = s3_path.split("/").collect();
+    let mut fp: Vec<_> = s3_path.split('/').collect();
     let hdt = match fp.pop() {
         Some(h) => h,
         _ => {
@@ -389,7 +389,7 @@ fn strip_hash_from_s3(s3_path: &str) -> Result<String, std::io::Error> {
         }
     };
     // Split the 902938470293847392033874592038473.chunk
-    let hs: Vec<_> = hdt.split(".").collect();
+    let hs: Vec<_> = hdt.split('.').collect();
     // Just grab the first split, which is the hash
     let hash = hs[0].to_string();
     // Ship it

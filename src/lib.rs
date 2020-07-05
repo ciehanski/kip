@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 pub mod args;
 pub mod chunk;
 pub mod conf;

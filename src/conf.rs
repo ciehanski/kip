@@ -18,6 +18,7 @@ pub struct KipConf {
 }
 
 impl KipConf {
+    #![allow(clippy::new_ret_no_self)]
     pub fn new() -> Result<(), Error> {
         if let Some(proj_dirs) = ProjectDirs::from("com", "ciehanski", "kip") {
             if proj_dirs.config_dir().join("kip.json").exists() {

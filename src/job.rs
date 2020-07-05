@@ -286,12 +286,12 @@ mod tests {
     fn test_get_file_hashes() {
         let mut j = Job::new("test1", "hunter2", "testing1", "us-east-1");
         j.files.push(KipFile::new(PathBuf::from(
-            "/Users/Ryan/Documents/RustProjects/kip/src",
+            "/Users/Ryan/Documents/RustProjects/kip/.gitignore",
         )));
         j.get_file_hashes().unwrap();
         assert_eq!(
             j.files[0].hash,
-            "2c9898c3bc261aaa70bddc9f679181623ceaf8be02046c32aad2b7296373eaf1"
+            "5d2d0aa7a0d36fa1162828829ae134d331223af6db182ed14ae872a554e4e971"
         )
     }
 }

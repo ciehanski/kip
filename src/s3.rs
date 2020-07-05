@@ -51,7 +51,7 @@ pub async fn s3_upload(
         s3_client
             .put_object(PutObjectRequest {
                 bucket: aws_bucket.clone(),
-                key: format!("{}/chunks/{}.chunk", job_id, chunk.0.hash,),
+                key: format!("{}/chunks/{}.chunk", job_id, chunk.0.hash),
                 content_length: Some(fmd_len as i64),
                 body: Some(StreamingBody::from(encrypted)),
                 ..Default::default()
@@ -73,7 +73,7 @@ pub async fn s3_download(
     let s3_client = S3Client::new(aws_region);
     let result = s3_client
         .get_object(GetObjectRequest {
-            bucket: aws_bucket.clone().to_string(),
+            bucket: aws_bucket.to_string(),
             key: f.to_string(),
             ..Default::default()
         })
