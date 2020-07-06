@@ -560,15 +560,15 @@ fn confirm_secret(job_secret: &str) -> Option<String> {
         .with_prompt("Please provide your encryption secret")
         .interact()
         .expect("[ERR] failed to create encryption secret prompt.");
-    let matched = compare_argon_secret(&secret, job_secret);
-    if !matched.unwrap_or_else(|e| {
+    let term = |e: argon2::Error| {
         terminate!(
             5,
             "{} failed to compare job secret with provided secret: {}.",
             "[ERR]".red(),
             e
         );
-    }) {
+    };
+    if !compare_argon_secret(&secret, job_secret).unwrap_or_else(term) {
         terminate!(1, "{} incorrect secret.", "[ERR]".red());
     };
     Some(secret)
