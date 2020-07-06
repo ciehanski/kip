@@ -1,4 +1,4 @@
-# kip
+# kip ![Build](https://github.com/ciehanski/kip/workflows/Build/badge.svg)
 
 ⚠️ This project is still in active development and is not ready for production ⚠️
 
