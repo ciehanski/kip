@@ -274,28 +274,26 @@ mod tests {
     #[test]
     fn test_get_files_amt() {
         let mut j = Job::new("test1", "hunter2", "testing1", "us-east-1");
-        j.files.push(KipFile::new(PathBuf::from(
-            "/Users/Ryan/Documents/RustProjects/kip/src",
-        )));
-        j.files.push(KipFile::new(PathBuf::from(
-            "/Users/Ryan/Documents/RustProjects/kip/Cargo.toml",
-        )));
-        j.files.push(KipFile::new(PathBuf::from(
-            "/Users/Ryan/Documents/RustProjects/kip/Cargo.lock",
-        )));
-        assert_eq!(j.get_files_amt().unwrap(), 12)
+        j.files.push(KipFile::new(PathBuf::from("test/vandy.jpg")));
+        j.files.push(KipFile::new(PathBuf::from("test/vandy.jpg")));
+        j.files.push(KipFile::new(PathBuf::from("test/vandy.jpg")));
+        j.files.push(KipFile::new(PathBuf::from("test/random.txt")));
+        assert_eq!(j.get_files_amt().unwrap(), 4)
     }
 
     #[test]
     fn test_get_file_hashes() {
         let mut j = Job::new("test1", "hunter2", "testing1", "us-east-1");
-        j.files.push(KipFile::new(PathBuf::from(
-            "/Users/Ryan/Documents/RustProjects/kip/.gitignore",
-        )));
+        j.files.push(KipFile::new(PathBuf::from("test/vandy.jpg")));
+        j.files.push(KipFile::new(PathBuf::from("test/random.txt")));
         j.get_file_hashes().unwrap();
         assert_eq!(
             j.files[0].hash,
-            "5d2d0aa7a0d36fa1162828829ae134d331223af6db182ed14ae872a554e4e971"
+            "97ad4887a60dfa689660bad732f92a2871dedf97add169267c43e2955415488d"
+        );
+        assert_eq!(
+            j.files[1].hash,
+            "44b4cdaf713dfaf961dedb34f07e15604f75eb049c83067ab35bf388b369dbf3"
         )
     }
 }

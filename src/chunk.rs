@@ -56,15 +56,15 @@ mod tests {
 
     #[test]
     fn test_chunk_small_file() {
-        let mut f = File::open("/Users/Ryan/Documents/ciehanski.com/index.html").unwrap();
-        let metadata = std::fs::metadata("/Users/Ryan/Documents/ciehanski.com/index.html").unwrap();
+        let mut f = File::open("test/random.txt").unwrap();
+        let metadata = std::fs::metadata("test/random.txt").unwrap();
         let mut buffer = vec![0; metadata.len() as usize];
         f.read(&mut buffer).unwrap();
         let chunk_hmap = chunk_file(&buffer);
         for c in chunk_hmap.iter() {
             assert_eq!(
                 c.0.hash,
-                "b2b09a9f4d09b6744568cdfb80d53a221fe3f8c232b03e9ebe343aefcab6b876".to_string()
+                "44b4cdaf713dfaf961dedb34f07e15604f75eb049c83067ab35bf388b369dbf3".to_string()
             );
         }
     }
