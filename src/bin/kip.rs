@@ -1,3 +1,7 @@
+//
+// Copyright (c) 2020 Ryan Ciehanski <ryan@ciehanski.com>
+//
+
 // Kip imports
 use kip::args::{Opt, Subcommands};
 use kip::conf::KipConf;
@@ -449,13 +453,13 @@ async fn main() {
                     };
                     // Add row with job info
                     table.add_row(Row::new(vec![
-                        Cell::new(&format!("{}", j.name.to_string())),
+                        Cell::new(&j.name.to_string()),
                         Cell::new(&format!("{}", j.id)),
-                        Cell::new(&format!("{}", j.aws_bucket.to_string())),
-                        Cell::new(&format!("{}", j.aws_region.name())),
+                        Cell::new(&j.aws_bucket.to_string()),
+                        Cell::new(&j.aws_region.name().to_string()),
                         Cell::new(&format!("{}", j.files_amt)),
                         Cell::new(&format!("{}", j.total_runs)),
-                        Cell::new(&format!("{}", correct_last_run)),
+                        Cell::new(&correct_last_run),
                         Cell::new(&format!("{}", j.last_status)),
                     ]));
                 }
@@ -495,13 +499,13 @@ async fn main() {
                 }
                 // Add row with job info
                 table.add_row(Row::new(vec![
-                    Cell::new(&format!("{}", j.name.to_string())),
+                    Cell::new(&j.name.to_string()),
                     Cell::new(&format!("{}", j.id)),
-                    Cell::new(&format!("{}", j.aws_bucket.to_string())),
-                    Cell::new(&format!("{}", j.aws_region.name())),
-                    Cell::new(&format!("{}", correct_files)),
+                    Cell::new(&j.aws_bucket.to_string()),
+                    Cell::new(&j.aws_region.name().to_string()),
+                    Cell::new(&correct_files),
                     Cell::new(&format!("{}", j.total_runs)),
-                    Cell::new(&format!("{}", correct_last_run)),
+                    Cell::new(&correct_last_run),
                     Cell::new(&format!("{}", j.last_status)),
                 ]));
                 // Print the job table
@@ -521,11 +525,11 @@ async fn main() {
                 // Add row with run info
                 table.add_row(Row::new(vec![
                     Cell::new(&format!("{}-{}", j.name.to_string(), r.id)),
-                    Cell::new(&format!("{}", j.aws_bucket.to_string())),
-                    Cell::new(&format!("{}", j.aws_region.name())),
+                    Cell::new(&j.aws_bucket.to_string()),
+                    Cell::new(&j.aws_region.name().to_string()),
                     Cell::new(&format!("{}", r.files_changed.len())),
-                    Cell::new(&format!("{}", convert(r.bytes_uploaded as f64))),
-                    Cell::new(&format!("{}", r.time_elapsed)),
+                    Cell::new(&convert(r.bytes_uploaded as f64).to_string()),
+                    Cell::new(&r.time_elapsed.to_string()),
                     Cell::new(&format!("{}", r.status)),
                 ]));
                 // Create a table for logs
@@ -541,7 +545,7 @@ async fn main() {
                     pretty_logs.push_str("None");
                 }
                 // Add row to logs table
-                logs_table.add_row(Row::new(vec![Cell::new(&format!("{}", pretty_logs))]));
+                logs_table.add_row(Row::new(vec![Cell::new(&pretty_logs.to_string())]));
                 // Print the job table
                 table.printstd();
                 logs_table.printstd();
