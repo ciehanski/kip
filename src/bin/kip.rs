@@ -528,7 +528,7 @@ async fn main() {
                     Cell::new(&j.aws_bucket.to_string()),
                     Cell::new(&j.aws_region.name().to_string()),
                     Cell::new(&format!("{}", r.files_changed.len())),
-                    Cell::new(&convert(r.bytes_uploaded as f64).to_string()),
+                    Cell::new(&convert(r.bytes_uploaded as f64)),
                     Cell::new(&r.time_elapsed.to_string()),
                     Cell::new(&format!("{}", r.status)),
                 ]));
@@ -545,7 +545,7 @@ async fn main() {
                     pretty_logs.push_str("None");
                 }
                 // Add row to logs table
-                logs_table.add_row(Row::new(vec![Cell::new(&pretty_logs.to_string())]));
+                logs_table.add_row(Row::new(vec![Cell::new(&pretty_logs)]));
                 // Print the job table
                 table.printstd();
                 logs_table.printstd();
@@ -560,7 +560,8 @@ fn confirm_secret(job_secret: &str) -> Option<String> {
         .with_prompt("Please provide your encryption secret")
         .interact()
         .expect("[ERR] failed to create encryption secret prompt.");
-    if !compare_argon_secret(&secret, job_secret).unwrap_or_else(|e| {
+    let matched = compare_argon_secret(&secret, job_secret);
+    if !matched.unwrap_or_else(|e| {
         terminate!(
             5,
             "{} failed to compare job secret with provided secret: {}.",
