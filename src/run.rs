@@ -1,3 +1,7 @@
+//
+// Copyright (c) 2020 Ryan Ciehanski <ryan@ciehanski.com>
+//
+
 use crate::chunk::FileChunk;
 use crate::job::{Job, KipStatus};
 use crate::s3::{list_s3_bucket, s3_download, s3_upload};
@@ -372,7 +376,6 @@ fn assemble_chunks(
     }
     // Write the file
     write_chunk(&path, &file_bytes, &output_folder)?;
-    // Create the file
     Ok(())
 }
 

@@ -1,3 +1,7 @@
+//
+// Copyright (c) 2020 Ryan Ciehanski <ryan@ciehanski.com>
+//
+
 use structopt::StructOpt;
 
 #[derive(StructOpt)]

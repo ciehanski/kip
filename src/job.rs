@@ -1,3 +1,7 @@
+//
+// Copyright (c) 2020 Ryan Ciehanski <ryan@ciehanski.com>
+//
+
 use crate::run::Run;
 use chrono::prelude::*;
 use colored::*;

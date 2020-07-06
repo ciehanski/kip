@@ -1,3 +1,7 @@
+//
+// Copyright (c) 2020 Ryan Ciehanski <ryan@ciehanski.com>
+//
+
 use aead::{generic_array::GenericArray, Aead, NewAead};
 use argon2::{self, Config, ThreadMode, Variant, Version};
 use chacha20poly1305::XChaCha20Poly1305;

@@ -1,3 +1,7 @@
+//
+// Copyright (c) 2020 Ryan Ciehanski <ryan@ciehanski.com>
+//
+
 use crate::chunk::chunk_file;
 use crate::chunk::FileChunk;
 use crate::crypto::{decrypt, encrypt};

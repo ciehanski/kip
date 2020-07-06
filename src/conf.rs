@@ -1,3 +1,7 @@
+//
+// Copyright (c) 2020 Ryan Ciehanski <ryan@ciehanski.com>
+//
+
 use crate::job::Job;
 use chrono::prelude::*;
 use dialoguer::Password;
