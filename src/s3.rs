@@ -26,7 +26,8 @@ pub async fn s3_upload(
     secret: &str,
 ) -> Result<HashMap<String, FileChunk>, Box<dyn Error>> {
     // Chunk the file
-    let chunk_map = chunk_file(&read(f)?);
+    let contents = &read(f)?;
+    let chunk_map = chunk_file(contents);
     // Upload each chunk
     let mut chunks = HashMap::new();
     'outer: for mut chunk in chunk_map {
