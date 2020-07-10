@@ -341,7 +341,7 @@ fn assemble_chunks(
     // Write the file
     for chunk in chunks.iter() {
         cfile.seek(std::io::SeekFrom::Start(chunk.0.offset as u64))?;
-        cfile.write(chunk.1)?;
+        cfile.write_all(chunk.1)?;
     }
     Ok(())
 }
