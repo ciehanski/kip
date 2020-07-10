@@ -30,7 +30,7 @@ impl FileChunk {
 }
 
 // ref: https://github.com/nlfiedler/fastcdc-rs/blob/master/examples/dedupe.rs
-pub fn chunk_file(bytes: &[u8]) -> HashMap<FileChunk, Vec<u8>> {
+pub fn chunk_file(bytes: &[u8]) -> HashMap<FileChunk, &[u8]> {
     // Create a new chunker with an average size per chunk in bytes
     let avg_size = 131072 as usize;
     let chunker = FastCDC::new(&bytes[..], avg_size / 2, avg_size, avg_size * 2);
@@ -41,7 +41,7 @@ pub fn chunk_file(bytes: &[u8]) -> HashMap<FileChunk, Vec<u8>> {
         let digest = hex_digest(Algorithm::SHA256, &bytes[entry.offset..end]);
         chunks.insert(
             FileChunk::new(&digest, entry.offset, entry.length, end),
-            bytes[entry.offset..end].to_vec(),
+            &bytes[entry.offset..end],
         );
     }
     // Ship it
@@ -55,9 +55,10 @@ mod tests {
 
     #[test]
     fn test_chunk_small_file() {
-        let contents = read("test/random.txt");
-        assert!(contents.is_ok());
-        let chunk_hmap = chunk_file(&contents.unwrap());
+        let content_result = read("test/random.txt");
+        assert!(content_result.is_ok());
+        let contents = content_result.unwrap();
+        let chunk_hmap = chunk_file(&contents);
         for c in chunk_hmap.iter() {
             assert_eq!(
                 c.0.hash,
