@@ -459,9 +459,9 @@ checksum = "e88a8acf291dafb59c2d96e8f59828f3838bb1a70398823ade51a84de6a6deed"
 
 [[package]]
 name = "fastcdc"
-version = "1.0.3"
+version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2aaab38e1e9527b495f893a781b1388eaf452d9d8a2e01773d5bcc00a8f893c5"
+checksum = "5c759c6cf5fb38a252c23803fbb757ebfeec20aa61d964cb878be7a7f904d3f3"
 
 [[package]]
 name = "fnv"
