@@ -355,14 +355,13 @@ fn create_file(path: &Path, output_folder: &str) -> Result<File, Box<dyn Error>>
     };
     std::fs::create_dir_all(folder_parent)?;
     // Create the file
-    let cfile: File;
-    if !Path::new(&output_folder).join(correct_chunk_path).exists() {
-        cfile = File::create(Path::new(&output_folder).join(correct_chunk_path))?;
+    let cfile = if !Path::new(&output_folder).join(correct_chunk_path).exists() {
+        File::create(Path::new(&output_folder).join(correct_chunk_path))?
     } else {
-        cfile = OpenOptions::new()
+        OpenOptions::new()
             .write(true)
-            .open(Path::new(&output_folder).join(correct_chunk_path))?;
-    }
+            .open(Path::new(&output_folder).join(correct_chunk_path))?
+    };
     Ok(cfile)
 }
 
