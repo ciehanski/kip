@@ -51,16 +51,13 @@ pub fn chunk_file(bytes: &[u8]) -> HashMap<FileChunk, Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs::File;
-    use std::io::Read;
+    use std::fs::read;
 
     #[test]
     fn test_chunk_small_file() {
-        let mut f = File::open("test/random.txt").unwrap();
-        let metadata = std::fs::metadata("test/random.txt").unwrap();
-        let mut buffer = vec![0; metadata.len() as usize];
-        f.read(&mut buffer).unwrap();
-        let chunk_hmap = chunk_file(&buffer);
+        let contents = read("test/random.txt");
+        assert!(contents.is_ok());
+        let chunk_hmap = chunk_file(&contents.unwrap());
         for c in chunk_hmap.iter() {
             assert_eq!(
                 c.0.hash,
