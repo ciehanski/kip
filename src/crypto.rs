@@ -114,57 +114,58 @@ mod tests {
 
     #[test]
     fn test_generate_nonce() {
-        let t = generate_nonce(24);
-        assert_eq!(t.len(), 24);
+        let nonce = generate_nonce(24);
+        assert_eq!(nonce.len(), 24);
     }
 
     #[test]
     fn test_encrypt() {
-        match encrypt(
+        let encrypt_result = encrypt(
             b"Super secure information. Please do not share or read.",
             "hunter2",
-        ) {
-            Ok(b) => b,
-            Err(e) => panic!("{:#?}", e),
-        };
+        );
+        assert!(encrypt_result.is_ok());
     }
 
     #[test]
     fn test_decrypt() {
-        let en = encrypt(
+        let encrypt_result = encrypt(
             b"Super secure information. Please do not share or read.",
             "hunter2",
-        )
-        .expect("failed to encrypt");
-        let de = match decrypt(&en, "hunter2") {
-            Ok(b) => b,
-            Err(e) => panic!("{:#?}", e),
-        };
+        );
+        assert!(encrypt_result.is_ok());
+        let decrypt_result = decrypt(&encrypt_result.unwrap(), "hunter2");
+        assert!(decrypt_result.is_ok());
+        let decrypted = decrypt_result.unwrap();
         assert_eq!(
-            std::str::from_utf8(&de).expect("failed to convert utf-8 to str"),
+            std::str::from_utf8(&decrypted).unwrap(),
             "Super secure information. Please do not share or read."
         )
     }
 
     #[test]
     fn test_extract_nonce() {
-        let encrypted = encrypt(
+        let encrypt_result = encrypt(
             b"Super secure information. Please do not share or read.",
             "hunter2",
-        )
-        .unwrap();
+        );
+        assert!(encrypt_result.is_ok());
+        let encrypted = encrypt_result.unwrap();
         let (nonce, _) = extract_nonce(&encrypted);
         assert_eq!(nonce.len(), 24);
         let decrypted = decrypt(&encrypted, "hunter2").unwrap();
         assert_eq!(
-            std::str::from_utf8(&decrypted).expect("failed to convert utf-8 to str"),
+            std::str::from_utf8(&decrypted).unwrap(),
             "Super secure information. Please do not share or read."
         )
     }
 
     #[test]
     fn test_argon() {
-        let hash = argon_hash_secret("hunter2").expect("should encrypt");
-        assert!(compare_argon_secret("hunter2", &hash).unwrap())
+        let hash_result = argon_hash_secret("hunter2");
+        assert!(hash_result.is_ok());
+        let compare_result = compare_argon_secret("hunter2", &hash_result.unwrap());
+        assert!(compare_result.is_ok());
+        assert!(compare_result.unwrap())
     }
 }
