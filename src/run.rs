@@ -276,7 +276,8 @@ impl Run {
                     for (_, chunk) in fc.iter() {
                         if self.is_single_chunk(chunk) {
                             // If a single-chunk file, simply decrypt and write
-                            write_chunk(&chunk.local_path, &chunk_bytes, &output_folder)?;
+                            let mut cfile = create_file(&chunk.local_path, &output_folder)?;
+                            cfile.write_all(&chunk_bytes)?;
                             continue 'outer;
                         } else {
                             // If a multi-chunk file pass to multi-chunk vec
@@ -326,14 +327,27 @@ impl Run {
     }
 }
 
-// Takes a FileChunk's bytes and writes them to disk.
-fn write_chunk(
-    chunk_path: &Path,
-    chunk_bytes: &[u8],
+// Find all chunks associated with the same path
+// and combine them in order according to their offsets and
+// lengths and then save to the original local path
+fn assemble_chunks(
+    chunks: Vec<(&FileChunk, &[u8])>,
     output_folder: &str,
 ) -> Result<(), Box<dyn Error>> {
-    // Create parent directory if missing
-    let correct_chunk_path = chunk_path.strip_prefix("/")?;
+    // Get path for chunks
+    let path = chunks[0].0.local_path.clone();
+    // Create file
+    let mut cfile = create_file(&path, output_folder)?;
+    // Write the file
+    for chunk in chunks.iter() {
+        cfile.seek(std::io::SeekFrom::Start(chunk.0.offset as u64))?;
+        cfile.write(chunk.1)?;
+    }
+    Ok(())
+}
+
+fn create_file(path: &Path, output_folder: &str) -> Result<File, Box<dyn Error>> {
+    let correct_chunk_path = path.strip_prefix("/")?;
     let folder_path = Path::new(&output_folder).join(correct_chunk_path);
     let folder_parent = match folder_path.parent() {
         Some(p) => p,
@@ -341,42 +355,15 @@ fn write_chunk(
     };
     std::fs::create_dir_all(folder_parent)?;
     // Create the file
+    let cfile: File;
     if !Path::new(&output_folder).join(correct_chunk_path).exists() {
-        let mut dfile = File::create(Path::new(&output_folder).join(correct_chunk_path))?;
-        dfile.write_all(&chunk_bytes)?;
+        cfile = File::create(Path::new(&output_folder).join(correct_chunk_path))?;
     } else {
-        let mut dfile = OpenOptions::new()
+        cfile = OpenOptions::new()
             .write(true)
             .open(Path::new(&output_folder).join(correct_chunk_path))?;
-        dfile.write_all(&chunk_bytes)?;
     }
-    Ok(())
-}
-
-// TODO: file sizes seem to be doubled when restoring
-// multi-chunk files
-// Find all chunks associated with the same path
-// and combine them in order according to their offsets and
-// lengths and then save to the original local path
-fn assemble_chunks(
-    mut chunks: Vec<(&FileChunk, &[u8])>,
-    output_folder: &str,
-) -> Result<(), Box<dyn Error>> {
-    // Get path for chunks
-    let path = chunks[0].0.local_path.clone();
-    // Sort all chunks by their offset
-    // TODO: this sort isn't working for some reason. On music
-    // files for instance, portions of the song are out of order
-    // or repeated. The correct length remains intact, however.
-    chunks.sort_by(|a, b| a.0.offset.cmp(&b.0.offset));
-    // Write all chunk bytes into final collection of bytes
-    let mut file_bytes = Vec::<u8>::new();
-    for chunk in chunks.iter_mut() {
-        file_bytes.append(&mut chunk.1.to_vec());
-    }
-    // Write the file
-    write_chunk(&path, &file_bytes, &output_folder)?;
-    Ok(())
+    Ok(cfile)
 }
 
 fn strip_hash_from_s3(s3_path: &str) -> Result<String, std::io::Error> {
@@ -391,7 +378,7 @@ fn strip_hash_from_s3(s3_path: &str) -> Result<String, std::io::Error> {
             ))
         }
     };
-    // Split the 902938470293847392033874592038473.chunk
+    // Split the chunk. Ex: 902938470293847392033874592038473.chunk
     let hs: Vec<_> = hdt.split('.').collect();
     // Just grab the first split, which is the hash
     let hash = hs[0].to_string();
@@ -404,12 +391,15 @@ mod tests {
     use super::*;
     use crate::chunk::chunk_file;
     use std::fs::read;
+    use std::path::PathBuf;
 
     #[test]
     fn test_is_single_chunk() {
         let mut r = Run::new(9998);
-        let f = read(&std::path::PathBuf::from("test/random.txt")).unwrap();
-        let chunk_hmap = chunk_file(&f);
+        let content_result = read(&PathBuf::from("test/random.txt"));
+        assert!(content_result.is_ok());
+        let contents = content_result.unwrap();
+        let chunk_hmap = chunk_file(&contents);
         let mut t = HashMap::new();
         let mut fc = FileChunk::new("", 0, 0, 0);
         for c in chunk_hmap {
@@ -423,8 +413,10 @@ mod tests {
     #[test]
     fn test_is_not_single_chunk() {
         let mut r = Run::new(9999);
-        let f = read(&std::path::PathBuf::from("test/vandy.jpg")).unwrap();
-        let chunk_hmap = chunk_file(&f);
+        let content_result = read(&PathBuf::from("test/vandy.jpg"));
+        assert!(content_result.is_ok());
+        let contents = content_result.unwrap();
+        let chunk_hmap = chunk_file(&contents);
         let mut t = HashMap::new();
         let mut fc = FileChunk::new("", 0, 0, 0);
         for c in chunk_hmap {
