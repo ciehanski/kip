@@ -34,7 +34,7 @@ pub fn chunk_file(bytes: &[u8]) -> HashMap<FileChunk, &[u8]> {
     // Create a new chunker with an average size per chunk in bytes
     let avg_size = 131072 as usize;
     let chunker = FastCDC::new(&bytes[..], avg_size / 2, avg_size, avg_size * 2);
-    // For each chunk generated , add it to chunks collection to return
+    // For each chunk generated, add it to chunks collection to return
     let mut chunks = HashMap::new();
     for entry in chunker {
         let end = entry.offset + entry.length;
