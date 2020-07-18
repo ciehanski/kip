@@ -2,6 +2,7 @@
 // Copyright (c) 2020 Ryan Ciehanski <ryan@ciehanski.com>
 //
 
+#![warn(clippy::all)]
 #![forbid(unsafe_code)]
 
 pub mod args;
