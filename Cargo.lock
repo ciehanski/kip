@@ -312,6 +312,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b3a71ab494c0b5b860bdc8407ae08978052417070c2ced38573a9157ad75b8ac"
 
 [[package]]
+name = "cpuid-bool"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8aebca1129a03dc6dc2b127edd729435bbc4a37e1d5f4d7513165089ceb02634"
+
+[[package]]
+name = "crc32fast"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba125de2af0df55319f41944744ad91c71113bf74a4646efff39afe1f6842db1"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "crossbeam-utils"
 version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -342,6 +357,16 @@ checksum = "4434400df11d95d556bac068ddfedd482915eb18fe8bea89bc80b6e4b1c179e5"
 dependencies = [
  "generic-array 0.12.3",
  "subtle 1.0.0",
+]
+
+[[package]]
+name = "crypto-mac"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b584a330336237c1eecd3e94266efb216c56ed91225d634cb2991c5f3fd1aeab"
+dependencies = [
+ "generic-array 0.14.3",
+ "subtle 2.2.3",
 ]
 
 [[package]]
@@ -695,8 +720,18 @@ version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5dcb5e64cda4c23119ab41ba960d1e170a774c8e4b9d9e6a9bc18aabf5e59695"
 dependencies = [
- "crypto-mac",
+ "crypto-mac 0.7.0",
  "digest 0.8.1",
+]
+
+[[package]]
+name = "hmac"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "126888268dcc288495a26bf004b38c5fdbb31682f992c84ceb046a1f0fe38840"
+dependencies = [
+ "crypto-mac 0.8.0",
+ "digest 0.9.0",
 ]
 
 [[package]]
@@ -826,7 +861,7 @@ dependencies = [
  "pretty-bytes",
  "prettytable-rs",
  "rand",
- "rusoto_core",
+ "rusoto_core 0.45.0",
  "rusoto_s3",
  "rust-argon2 0.8.2",
  "serde",
@@ -1277,7 +1312,7 @@ dependencies = [
  "base64 0.12.3",
  "bytes",
  "futures",
- "hmac",
+ "hmac 0.7.1",
  "http",
  "hyper",
  "hyper-tls",
@@ -1286,12 +1321,40 @@ dependencies = [
  "md5",
  "percent-encoding",
  "pin-project",
- "rusoto_credential",
- "rusoto_signature",
+ "rusoto_credential 0.44.0",
+ "rusoto_signature 0.44.0",
  "rustc_version",
  "serde",
  "serde_json",
- "sha2",
+ "sha2 0.8.2",
+ "tokio",
+ "xml-rs",
+]
+
+[[package]]
+name = "rusoto_core"
+version = "0.45.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e977941ee0658df96fca7291ecc6fc9a754600b21ad84b959eb1dbbc9d5abcc7"
+dependencies = [
+ "async-trait",
+ "base64 0.12.3",
+ "bytes",
+ "crc32fast",
+ "futures",
+ "http",
+ "hyper",
+ "hyper-tls",
+ "lazy_static",
+ "log",
+ "md5",
+ "percent-encoding",
+ "pin-project",
+ "rusoto_credential 0.45.0",
+ "rusoto_signature 0.45.0",
+ "rustc_version",
+ "serde",
+ "serde_json",
  "tokio",
  "xml-rs",
 ]
@@ -1317,6 +1380,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "rusoto_credential"
+version = "0.45.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09ac05563f83489b19b4d413607a30821ab08bbd9007d14fa05618da3ef09d8b"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "dirs 2.0.2",
+ "futures",
+ "hyper",
+ "pin-project",
+ "regex",
+ "serde",
+ "serde_json",
+ "shlex",
+ "tokio",
+ "zeroize",
+]
+
+[[package]]
 name = "rusoto_s3"
 version = "0.44.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1325,7 +1408,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "futures",
- "rusoto_core",
+ "rusoto_core 0.44.0",
  "xml-rs",
 ]
 
@@ -1339,17 +1422,42 @@ dependencies = [
  "bytes",
  "futures",
  "hex 0.4.2",
- "hmac",
+ "hmac 0.7.1",
  "http",
  "hyper",
  "log",
  "md5",
  "percent-encoding",
  "pin-project",
- "rusoto_credential",
+ "rusoto_credential 0.44.0",
  "rustc_version",
  "serde",
- "sha2",
+ "sha2 0.8.2",
+ "time 0.2.16",
+ "tokio",
+]
+
+[[package]]
+name = "rusoto_signature"
+version = "0.45.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97a740a88dde8ded81b6f2cff9cd5e054a5a2e38a38397260f7acdd2c85d17dd"
+dependencies = [
+ "base64 0.12.3",
+ "bytes",
+ "futures",
+ "hex 0.4.2",
+ "hmac 0.8.1",
+ "http",
+ "hyper",
+ "log",
+ "md5",
+ "percent-encoding",
+ "pin-project",
+ "rusoto_credential 0.45.0",
+ "rustc_version",
+ "serde",
+ "sha2 0.9.1",
  "time 0.2.16",
  "tokio",
 ]
@@ -1497,6 +1605,19 @@ dependencies = [
  "digest 0.8.1",
  "fake-simd",
  "opaque-debug 0.2.3",
+]
+
+[[package]]
+name = "sha2"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2933378ddfeda7ea26f48c555bdad8bb446bf8a3d17832dc83e380d444cfb8c1"
+dependencies = [
+ "block-buffer 0.9.0",
+ "cfg-if",
+ "cpuid-bool",
+ "digest 0.9.0",
+ "opaque-debug 0.3.0",
 ]
 
 [[package]]
