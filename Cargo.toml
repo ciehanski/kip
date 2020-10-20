@@ -7,7 +7,7 @@ edition = "2018"
 [dependencies]
 chrono = { version = "0.4", features = ["serde"] }
 walkdir = "2.3.1"
-dialoguer = "0.6"
+dialoguer = "0.7"
 structopt = "0.3.14"
 serde = { version = "1.0.101", features = ["derive"] }
 serde_json = "1.0"
