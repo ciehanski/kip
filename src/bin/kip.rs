@@ -1,38 +1,26 @@
 //
-// Copyright (c) 2020 Ryan Ciehanski <ryan@ciehanski.com>
+// Copyright (c) 2022 Ryan Ciehanski <ryan@ciehanski.com>
 //
 
-// Kip imports
-use kip::args::{Opt, Subcommands};
-use kip::conf::KipConf;
-use kip::crypto::{argon_hash_secret, compare_argon_secret};
-use kip::job::{Job, KipFile};
-// External imports
 use chrono::prelude::*;
 use colored::*;
 use dialoguer::Confirm;
 use dialoguer::Password;
+use kip::args::{Opt, Subcommands};
+use kip::conf::KipConf;
+use kip::crypto::{hash_secret_encoded, verify_argon_secret};
+use kip::job::{Job, KipFile};
 use pretty_bytes::converter::convert;
 use prettytable::{Cell, Row, Table};
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use structopt::StructOpt;
 
 #[tokio::main]
 async fn main() {
-    // Writes default config if missing
-    match KipConf::new() {
-        Ok(_) => (),
-        Err(e) => terminate!(
-            5,
-            "{} failed to create new kip configuration: {}",
-            "[ERR]".red(),
-            e
-        ),
-    };
-
     // Get config
-    let mut cfg = KipConf::get().unwrap_or_else(|e| {
+    let cfg_file = KipConf::new().unwrap_or_else(|e| {
         terminate!(
             5,
             "{} failed to get kip configuration: {}.",
@@ -40,30 +28,17 @@ async fn main() {
             e
         );
     });
-
-    // Create background thread to poll backup
-    // interval for all jobs
-    // std::thread::spawn(|| async {
-    //     let mut cfg = KipConf::get().unwrap_or_else(|e| {
-    //         terminate!(
-    //             5,
-    //             "{} failed to get kip configuration: {}.",
-    //             "[ERR]".red(),
-    //             e
-    //         );
-    //     });
-    //     // TODO: get the user's correct secret
-    //     cfg.poll_backup_jobs("").await;
-    // });
+    let cfg = Arc::clone(&cfg_file);
 
     // Get subcommands and args
     let args: Opt = Opt::from_args();
-    let _debug = args.debug;
+    // let _debug = args.debug;
 
     // Match user input command
     match args.subcommands {
         // Create a new job
         Subcommands::Init { job } => {
+            let mut cfg = cfg.write().await;
             // Ensure that job does not already exist with
             // the provided name.
             for (j, _) in cfg.jobs.iter() {
@@ -77,9 +52,27 @@ async fn main() {
                 .interact()
                 .expect("[ERR] failed to create encryption secret prompt.");
             // Encrypt provided secret
-            let encrypted_secret = argon_hash_secret(&secret).unwrap_or_else(|e| {
+            let encrypted_secret = hash_secret_encoded(&secret).unwrap_or_else(|e| {
                 terminate!(5, "{} failed to encrypt secret: {}.", "[ERR]".red(), e);
             });
+            // Get S3 access key from user input
+            print!("Please provide the S3 access key: ");
+            std::io::stdout()
+                .flush()
+                .expect("[ERR] failed to flush stdout.");
+            let mut s3_acc_key = String::new();
+            std::io::stdin()
+                .read_line(&mut s3_acc_key)
+                .expect("[ERR] failed to read S3 access key from stdin.");
+            // Get S3 secret key from user input
+            print!("Please provide the S3 secret key: ");
+            std::io::stdout()
+                .flush()
+                .expect("[ERR] failed to flush stdout.");
+            let mut s3_sec_key = String::new();
+            std::io::stdin()
+                .read_line(&mut s3_sec_key)
+                .expect("[ERR] failed to read S3 secret key from stdin.");
             // Get S3 bucket name from user input
             print!("Please provide the S3 bucket name: ");
             std::io::stdout()
@@ -102,7 +95,9 @@ async fn main() {
             let new_job = Job::new(
                 &job,
                 &encrypted_secret,
-                &s3_bucket_name.trim_end(),
+                &s3_acc_key.trim_end(),
+                &s3_sec_key.trim_end(),
+                s3_bucket_name.trim_end(),
                 &s3_region.trim_end(),
             );
             // Push new job in config
@@ -110,29 +105,39 @@ async fn main() {
             // // Store new job in config
             match cfg.save() {
                 Ok(_) => println!("{} job '{}' successfully created.", "[OK]".green(), job),
-                Err(e) => eprintln!("{} failed to save kip configuration: {}", "[ERR]".red(), e),
+                Err(e) => terminate!(
+                    7,
+                    "{} failed to save kip configuration: {}",
+                    "[ERR]".red(),
+                    e
+                ),
             }
         }
 
         // Add more files or directories to job
         Subcommands::Add { job, file_path } => {
+            let mut cfg = cfg.write().await;
             // Check if file or directory exists
             for f in &file_path {
-                if !Path::new(&f).exists() {
+                if !Path::new(f).exists() {
                     terminate!(2, "{} '{}' doesn't exist.", "[ERR]".red(), f);
                 }
             }
             // Get job from argument provided
-            let mut j = cfg.jobs.get_mut(&job).unwrap_or_else(|| {
+            let j = cfg.jobs.get_mut(&job).unwrap_or_else(|| {
                 terminate!(2, "{} job '{}' doesn't exist.", "[ERR]".red(), &job);
             });
-            // Confirm correct secret from user input
-            confirm_secret(&j.secret);
             // Check if files already exist on job
             // to avoid duplication.
             for jf in &j.files {
                 for f in &file_path {
-                    if &jf.path.display().to_string() == f {
+                    if &jf.path.display().to_string()
+                        == &PathBuf::from(f)
+                            .canonicalize()
+                            .expect("[ERR] unable to canonicalize path.")
+                            .display()
+                            .to_string()
+                    {
                         terminate!(
                             17,
                             "{} file(s) already exist on job '{}'.",
@@ -142,6 +147,8 @@ async fn main() {
                     }
                 }
             }
+            // Confirm correct secret from user input
+            confirm_secret(&j.secret);
             // Push new files to job
             for f in file_path {
                 j.files.push(KipFile::new(
@@ -151,9 +158,15 @@ async fn main() {
                 ));
             }
             // Get new files amount for job
-            j.files_amt = j
-                .get_files_amt()
-                .expect("[ERR] failed to get files amount for job.");
+            j.files_amt = j.get_files_amt().unwrap_or_else(|e| {
+                terminate!(
+                    6,
+                    "{} failed to get file amounts for {}: {}.",
+                    "[ERR]".red(),
+                    &job,
+                    e
+                );
+            });
             // Save changes to config file
             match cfg.save() {
                 Ok(_) => println!(
@@ -161,12 +174,18 @@ async fn main() {
                     "[OK]".green(),
                     &job
                 ),
-                Err(e) => eprintln!("{} failed to save kip configuration: {}", "[ERR]".red(), e),
+                Err(e) => terminate!(
+                    7,
+                    "{} failed to save kip configuration: {}",
+                    "[ERR]".red(),
+                    e
+                ),
             }
         }
 
         // Remove files from a job
         Subcommands::Remove { job, file_path } => {
+            let mut cfg = cfg.write().await;
             // Get job from argument provided
             let j = cfg.jobs.get_mut(&job).unwrap_or_else(|| {
                 terminate!(2, "{} job '{}' doesn't exist.", "[ERR]".red(), &job);
@@ -205,9 +224,15 @@ async fn main() {
                                         .expect("[ERR] unable to canonicalize path.")
                             });
                             // Get new files amount for job
-                            j.files_amt = j
-                                .get_files_amt()
-                                .expect("[ERR] failed to get files amount for job.");
+                            j.files_amt = j.get_files_amt().unwrap_or_else(|e| {
+                                terminate!(
+                                    6,
+                                    "{} failed to get file amounts for {}: {}.",
+                                    "[ERR]".red(),
+                                    &job,
+                                    e
+                                );
+                            });
                             // Find all the runs that contain this file's chunks
                             // and remove them from S3.
                             for run in j.runs.iter() {
@@ -231,11 +256,11 @@ async fn main() {
                                             // Set AWS env vars for backup
                                             std::env::set_var(
                                                 "AWS_ACCESS_KEY_ID",
-                                                &cfg.s3_access_key,
+                                                &j.s3_access_key,
                                             );
                                             std::env::set_var(
                                                 "AWS_SECRET_ACCESS_KEY",
-                                                &cfg.s3_secret_key,
+                                                &j.s3_secret_key,
                                             );
                                             std::env::set_var("AWS_REGION", &j.aws_region.name());
                                             match kip::s3::delete_s3_object(
@@ -275,9 +300,15 @@ async fn main() {
                         };
                     }
                     // Update files amt for job
-                    j.files_amt = j
-                        .get_files_amt()
-                        .expect("[ERR] failed to get files amount for job.");
+                    j.files_amt = j.get_files_amt().unwrap_or_else(|e| {
+                        terminate!(
+                            6,
+                            "{} failed to get file amounts for {}: {}.",
+                            "[ERR]".red(),
+                            &job,
+                            e
+                        );
+                    });
                     // Save changes to config file
                     match cfg.save() {
                         Ok(_) => println!(
@@ -308,46 +339,43 @@ async fn main() {
 
         // Start a job's upload
         Subcommands::Push { job } => {
-            // Prompt user for s3 info if nil. Probably used
-            // regex later but I don't want to right now.
-            cfg.prompt_s3_keys();
+            let mut cfg = cfg.write().await;
             // Get job from argument provided
             let j = cfg.jobs.get_mut(&job).unwrap_or_else(|| {
                 terminate!(2, "{} job '{}' doesn't exist.", "[ERR]".red(), &job);
             });
             // Get new files amount for job
-            j.files_amt = j
-                .get_files_amt()
-                .expect("[ERR] failed to get files amount for job.");
+            j.files_amt = j.get_files_amt().unwrap_or_else(|e| {
+                terminate!(
+                    6,
+                    "{} failed to get file amounts for {}: {}.",
+                    "[ERR]".red(),
+                    &job,
+                    e
+                );
+            });
             // Confirm correct secret from user input
             let secret = confirm_secret(&j.secret).unwrap_or_default();
             // Upload all files in a seperate thread
-            let bkt_name = j.aws_bucket.clone();
-            match j
-                .run_upload(&secret, &cfg.s3_access_key, &cfg.s3_secret_key)
-                .await
-            {
-                Ok(_) => {
-                    println!(
-                        "{} job '{}' uploaded successfully to '{}'.",
-                        "[OK]".green(),
-                        &job,
-                        &bkt_name
-                    );
-                }
+            match j.run_upload(&secret).await {
+                Ok(_) => {}
                 Err(e) => eprintln!(
                     "{} job '{}' upload to '{}' failed: {}",
                     "[ERR]".red(),
                     &job,
-                    &bkt_name,
+                    &j.aws_bucket,
                     e
                 ),
             }
             // Save changes to config file
-            match cfg.save() {
-                Ok(_) => (),
-                Err(e) => eprintln!("{} failed to save kip configuration: {}", "[ERR]".red(), e),
-            }
+            cfg.save().unwrap_or_else(|e| {
+                terminate!(
+                    7,
+                    "{} failed to save kip configuration: {}",
+                    "[ERR]".red(),
+                    e
+                );
+            });
         }
 
         // Start a backup restore
@@ -356,9 +384,7 @@ async fn main() {
             run,
             output_folder,
         } => {
-            // Prompt user for s3 info if nil. Probably used
-            // regex later but I don't want to right now.
-            cfg.prompt_s3_keys();
+            let mut cfg = cfg.write().await;
             // Get job from argument provided
             let j = cfg.jobs.get_mut(&job).unwrap_or_else(|| {
                 terminate!(2, "{} job '{}' doesn't exist.", "[ERR]".red(), &job);
@@ -366,16 +392,7 @@ async fn main() {
             // Confirm correct secret from user input
             let secret = confirm_secret(&j.secret).unwrap_or_default();
             // Only one restore can be happening at a time
-            match j
-                .run_restore(
-                    run,
-                    &secret,
-                    &cfg.s3_access_key,
-                    &cfg.s3_secret_key,
-                    output_folder,
-                )
-                .await
-            {
+            match j.run_restore(run, &secret, output_folder).await {
                 Ok(_) => {
                     println!("{} job '{}' restored successfully.", "[OK]".green(), &job,);
                 }
@@ -384,17 +401,19 @@ async fn main() {
                 }
             };
             // Save changes to config file
-            match cfg.save() {
-                Ok(_) => (),
-                Err(e) => eprintln!("{} failed to save kip configuration: {}", "[ERR]".red(), e),
-            }
+            cfg.save().unwrap_or_else(|e| {
+                terminate!(
+                    7,
+                    "{} failed to save kip configuration: {}",
+                    "[ERR]".red(),
+                    e
+                );
+            });
         }
 
         // Abort a running job
         Subcommands::Abort { job } => {
-            // Prompt user for s3 info if nil. Probably used
-            // regex later but I don't want to right now.
-            cfg.prompt_s3_keys();
+            let mut cfg = cfg.write().await;
             // Get job from argument provided
             let j = cfg.jobs.get_mut(&job).unwrap_or_else(|| {
                 terminate!(2, "{} job '{}' doesn't exist.", "[ERR]".red(), &job);
@@ -416,16 +435,19 @@ async fn main() {
 
         // Get the status of a job
         Subcommands::Status { job } => {
+            let cfg = cfg.read().await;
             // Get job from argument provided
             let j = cfg.jobs.get(&job).unwrap_or_else(|| {
                 terminate!(2, "{} job '{}' doesn't exist.", "[ERR]".red(), &job);
             });
+            // Print status
             println!("{}", j.last_status);
         }
 
         // List all jobs
         // This function is messing. Should probably cleanup.
         Subcommands::List { job, run } => {
+            let cfg = cfg.read().await;
             // Create the table
             let mut table = Table::new();
             //
@@ -442,7 +464,7 @@ async fn main() {
                     Cell::new("Status"),
                 ]));
                 // For each job, add a row
-                for (_, j) in cfg.jobs {
+                for (_, j) in cfg.jobs.iter() {
                     let correct_last_run = if j.last_run.format("%Y-%m-%d %H:%M:%S").to_string()
                         == "1970-01-01 00:00:00"
                     {
@@ -551,6 +573,30 @@ async fn main() {
                 logs_table.printstd();
             }
         }
+
+        // Get the status of a job
+        Subcommands::Daemon {} => {
+            // Arc Clone reference to KipConf
+            let daemon_cfg = Arc::clone(&cfg_file);
+            // Create background thread to poll backup
+            // interval for all jobs
+            tokio::spawn(async move {
+                // Duration of time to wait between each poll
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+                loop {
+                    // Get KipConf each loop iteration as to not cause
+                    // contention on the RwLock. Lock is dropped at end
+                    // of each loop
+                    let mut daemon_cfg = daemon_cfg.write().await;
+                    // Check if backup needs to be run for all jobs
+                    let _ = daemon_cfg.poll_backup_jobs().await;
+                    // Drop KipConf RwLock after check is done
+                    drop(daemon_cfg);
+                    // Wait 60 seconds, then loop again
+                    interval.tick().await;
+                }
+            });
+        }
     }
 }
 
@@ -568,7 +614,7 @@ fn confirm_secret(job_secret: &str) -> Option<String> {
             e
         );
     };
-    if !compare_argon_secret(&secret, job_secret).unwrap_or_else(term) {
+    if !verify_argon_secret(&secret, job_secret).unwrap_or_else(term) {
         terminate!(1, "{} incorrect secret.", "[ERR]".red());
     };
     Some(secret)

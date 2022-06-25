@@ -31,7 +31,7 @@ pub enum Subcommands {
     Add {
         /// Name of the job you want to add files to
         job: String,
-        /// which
+        /// The paths of all files to add to job
         #[structopt(short = "f", long = "files")]
         file_path: Vec<String>,
     },
@@ -42,7 +42,7 @@ pub enum Subcommands {
     Remove {
         /// Name of the job you want to remove files from
         job: String,
-        /// The IP address the C2 server will bind to
+        /// The paths of all files to remove remove job
         #[structopt(short = "f", long = "files")]
         file_path: Option<Vec<String>>,
     },
@@ -61,10 +61,10 @@ pub enum Subcommands {
     Pull {
         /// Name of the job you want to restore from
         job: String,
-        ///
+        /// Number of the jobs run to restore from
         #[structopt(short = "r", long = "run")]
         run: usize,
-        ///
+        /// Folder to restore files to
         #[structopt(short = "o", long = "output")]
         output_folder: Option<String>,
     },
@@ -89,12 +89,17 @@ pub enum Subcommands {
     ///
     #[structopt(name = "list", alias = "ls")]
     List {
-        /// Name of the job you want to get status from
+        /// Name of the job you want to list
         ///
         job: Option<String>,
-        /// Name of the run you want to get status from
+        /// Name of the run you want to list
         ///
         #[structopt(short = "r", long = "run")]
         run: Option<usize>,
     },
+
+    /// Runs kip in daemon service mode
+    ///
+    #[structopt(name = "daemon", alias = "d")]
+    Daemon {},
 }

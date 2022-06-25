@@ -2,31 +2,35 @@
 name = "kip"
 version = "0.1.0"
 authors = ["Ryan Ciehanski <ryan@ciehanski.com>"]
-edition = "2018"
+edition = "2021"
 
 [dependencies]
 chrono = { version = "0.4", features = ["serde"] }
-walkdir = "2.3.1"
-dialoguer = "0.6"
-structopt = "0.3.14"
-serde = { version = "1.0.101", features = ["derive"] }
+walkdir = "2"
+dialoguer = "0.10"
+structopt = "0.3"
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-uuid = { version = "0.8", features = ["serde", "v4"] }
-rand = "0.7.3"
-aead = "0.3.2"
-chacha20poly1305 = "0.5.0"
-sha3 = "0.9.1"
-rusoto_core = "0.44.0"
-rusoto_s3 = "0.44.0"
-tokio = "0.2.21"
+uuid = { version = "1.1", features = ["serde", "v4"] }
+rand = "0.8.5"
+aead = "0.4.3"
+chacha20poly1305 = "0.9.0"
+rusoto_core = "0.48"
+rusoto_s3 = "0.48"
+tokio = { version = "1.19", features = ["io-util", "fs", "sync"] }
 colored = "2.0"
 prettytable-rs = "0.8"
-fastcdc = "1.0.4"
+fastcdc = "1.0.6"
 crypto-hash = "0.3.4"
-pretty-bytes = "0.2.2"
-rust-argon2 = "0.8.2"
-directories = "3.0.1"
-humantime = "2.0.1"
+pretty-bytes = "0.2"
+rust-argon2 = "1.0.0"
+directories = "3.0"
+humantime = "2.0"
+zeroize = "1.4.3"
+
+[dev-dependencies]
+criterion = "0.3"
+tempfile = "3.3"
 
 [lib]
 name = "kip"
@@ -35,3 +39,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "kip"
 path = "src/bin/kip.rs"
+
+[[bench]]
+name = "bench"
+harness = false

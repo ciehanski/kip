@@ -1,122 +1,149 @@
 //
-// Copyright (c) 2020 Ryan Ciehanski <ryan@ciehanski.com>
+// Copyright (c) 2022 Ryan Ciehanski <ryan@ciehanski.com>
 //
 
-use aead::{generic_array::GenericArray, Aead, NewAead};
+use aead::{Aead, NewAead};
 use argon2::{self, Config, ThreadMode, Variant, Version};
-use chacha20poly1305::XChaCha20Poly1305;
+use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
 use rand::rngs::OsRng;
 use rand::Rng;
-use sha3::digest::generic_array::typenum::U32;
-use sha3::{Digest, Sha3_256};
+use std::collections::VecDeque;
+use std::error::Error;
+use zeroize::Zeroize;
 
-pub fn encrypt(plaintext: &[u8], secret: &str) -> Result<Vec<u8>, aead::Error> {
-    // SHA3-256 32-byte secret
-    let hashed_secret = hash_secret(secret);
-    let key = GenericArray::from_slice(&hashed_secret);
+const ARGON_CONF: Config = Config {
+    variant: Variant::Argon2id,
+    version: Version::Version13,
+    mem_cost: 65536,
+    time_cost: 1,
+    lanes: 1,
+    thread_mode: ThreadMode::Parallel,
+    secret: &[],
+    ad: &[],
+    hash_length: 32,
+};
+const SALT_LEN: usize = 32;
+const NONCE_LEN: usize = 24;
+
+pub fn encrypt(plaintext: &[u8], secret: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+    // Generate salt - 32-bytes
+    let mut salt = [0u8; SALT_LEN];
+    OsRng.fill(&mut salt);
+    // argon2 32-byte secret
+    let mut hashed_secret = argon2::hash_raw(secret.as_bytes(), &salt, &ARGON_CONF)?;
+    let key = Key::from_slice(&hashed_secret);
     // New XChaCha20Poly1305 from hashed_secret
     let aead = XChaCha20Poly1305::new(key);
     // Generate nonce - 24-bytes; unique
-    let nonce_str = generate_nonce(24);
-    let nonce = GenericArray::from_slice(nonce_str.as_bytes());
+    let mut nonce_raw = [0u8; NONCE_LEN];
+    OsRng.fill(&mut nonce_raw);
+    let nonce = XNonce::from_slice(&nonce_raw);
     // Encrypt
-    let mut ciphertext = aead.encrypt(nonce, plaintext.as_ref())?;
-    // Embed nonce to end of ciphertext; needed for decryption
-    ciphertext.append(&mut nonce_str.as_bytes().to_vec());
+    let mut ciphertext = match aead.encrypt(nonce, plaintext) {
+        Ok(hs) => hs,
+        Err(e) => {
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("unable to decrypt ciphertext: {}.", e),
+            )))
+        }
+    };
+    // CIPHERTEXT [?-bytes] | SALT [32-bytes] | NONCE [24-bytes]
+    // Append salt to end of ciphertext; needed for decryption
+    ciphertext.extend_from_slice(&salt);
+    // Append nonce to end of ciphertext; needed for decryption
+    ciphertext.extend_from_slice(&nonce);
+    // Zeroize arguments
+    // key and nonce are not zeroized since
+    // they reference the below vectors
+    salt.zeroize();
+    hashed_secret.zeroize();
+    nonce_raw.zeroize();
     // Ship it
     Ok(ciphertext)
 }
 
-pub fn decrypt(ciphertext: &[u8], secret: &str) -> Result<Vec<u8>, aead::Error> {
-    // SHA3-256 32-byte secret
-    let hashed_secret = hash_secret(secret);
-    let key = GenericArray::from_slice(&hashed_secret);
+pub fn decrypt(ciphertext: &[u8], secret: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+    // Pop off salt & nonce from ciphertext for decryption
+    let (mut salt_vec, mut nonce_vec, cipher_vec) = extract_salt_nonce(ciphertext);
+    // argon2 32-byte secret
+    let mut hashed_secret = argon2::hash_raw(secret.as_bytes(), &salt_vec, &ARGON_CONF)?;
+    let key = Key::from_slice(&hashed_secret);
     // New XChaCha20Poly1305 from hashed_secret
     let aead = XChaCha20Poly1305::new(key);
-    // Pop off nonce from ciphertext for decryption
-    let (nonce_vec, cipher_vec) = extract_nonce(ciphertext);
     // Generate generic array from popped off nonce
-    let nonce = GenericArray::from_slice(&nonce_vec);
+    let nonce = XNonce::from_slice(&nonce_vec);
     // Decrypt
-    let plaintext = aead.decrypt(nonce, cipher_vec.as_ref())?;
+    let plaintext = match aead.decrypt(nonce, cipher_vec.as_ref()) {
+        Ok(hs) => hs,
+        Err(e) => {
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("unable to decrypt ciphertext: {}.", e),
+            )))
+        }
+    };
+    // Zeroize arguments
+    // key and nonce are not zeroized since
+    // they reference the below vectors
+    salt_vec.zeroize();
+    nonce_vec.zeroize();
+    hashed_secret.zeroize();
     // Ship it
     Ok(plaintext)
 }
 
-pub fn argon_hash_secret(secret: &str) -> Result<String, argon2::Error> {
-    // Generate a 16-byte salt
-    let salt = generate_nonce(16);
-    // Configure argon2 parameters
-    let config = Config {
-        variant: Variant::Argon2id,
-        version: Version::Version13,
-        mem_cost: 65536,
-        time_cost: 2,
-        lanes: 4,
-        thread_mode: ThreadMode::Parallel,
-        secret: &[],
-        ad: &[],
-        hash_length: 32,
-    };
+// Extracts the nonce from the end of the ciphertext
+fn extract_salt_nonce(ciphertext: &[u8]) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    // Pop off nonce from ciphertext for decryption
+    let mut cipher_vec = ciphertext.to_vec();
+    let mut nonce_vec = VecDeque::with_capacity(NONCE_LEN);
+    let mut salt_vec = VecDeque::with_capacity(SALT_LEN);
+    // CIPHERTEXT [?-bytes] | SALT [32-bytes] | NONCE [24-bytes]
+    // Start with nonce since it is appended last
+    // Pop off the last 24 bytes of ciphertext
+    for _ in 0..NONCE_LEN {
+        // We always expect pop to produce Some
+        let nonce_byte = cipher_vec
+            .pop()
+            .expect("error popping nonce from ciphertext");
+        // Push front since pop works in reverse
+        // on the back of the Vec
+        nonce_vec.push_front(nonce_byte);
+    }
+    // Pop off the last 32 bytes of ciphertext
+    for _ in 0..SALT_LEN {
+        // We always expect pop to produce Some
+        let salt_byte = cipher_vec
+            .pop()
+            .expect("error popping salt from ciphertext");
+        // Push front since pop works in reverse
+        // on the back of the Vec
+        salt_vec.push_front(salt_byte);
+    }
+    // Ship it
+    (Vec::from(salt_vec), Vec::from(nonce_vec), cipher_vec)
+}
+
+pub fn hash_secret_encoded(secret: &str) -> Result<String, argon2::Error> {
+    // Generate salt - 32-bytes
+    let mut salt = [0u8; SALT_LEN];
+    OsRng.fill(&mut salt);
     // Generate hash from secret, salt, and argon2 config
-    let hash = argon2::hash_encoded(secret.as_bytes(), salt.as_bytes(), &config)?;
+    let hash = argon2::hash_encoded(secret.as_bytes(), &salt, &ARGON_CONF)?;
     // Ship it
     Ok(hash)
 }
 
-pub fn compare_argon_secret(secret: &str, hash: &str) -> Result<bool, argon2::Error> {
+pub fn verify_argon_secret(secret: &str, hash: &str) -> Result<bool, argon2::Error> {
     let matches = argon2::verify_encoded(&hash, secret.as_bytes())?;
     Ok(matches)
-}
-
-// Generates a 32-byte hash of a provided secret.
-fn hash_secret(secret: &str) -> GenericArray<u8, U32> {
-    // Create a SHA3-256 digest
-    let mut hasher = Sha3_256::new();
-    // Write password's bytes into hasher
-    hasher.update(secret.as_bytes());
-    // Return SHA3-256 32-byte secret hash
-    hasher.finalize()
-}
-
-// Generates a 24-byte string of random numbers.
-fn generate_nonce(len: usize) -> String {
-    // Loop 24 times to create 24-byte String of random numbers.
-    // Use OsRng to generate more "secure" random randomness.
-    let mut nonce = String::new();
-    for _ in 0..len {
-        let rn = OsRng.gen_range(0, 9);
-        nonce.push_str(&rn.to_string());
-    }
-    // Ship it
-    nonce
-}
-
-// Extracts the nonce from the end of the ciphertext
-fn extract_nonce(ciphertext: &[u8]) -> (Vec<u8>, Vec<u8>) {
-    // Pop off nonce from ciphertext for decryption
-    let mut cipher_vec = ciphertext.to_vec();
-    let mut nonce_vec: Vec<u8> = Vec::with_capacity(24);
-    // Pop off the last 24 bytes of ciphertext
-    for _ in 0..24 {
-        let nonce_byte = cipher_vec.pop().unwrap_or_default();
-        nonce_vec.push(nonce_byte);
-    }
-    // Reverse nonce since pop works backwards
-    let nonce_vec: Vec<u8> = nonce_vec.into_iter().rev().collect();
-    // Ship it
-    (nonce_vec, cipher_vec)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_generate_nonce() {
-        let nonce = generate_nonce(24);
-        assert_eq!(nonce.len(), 24);
-    }
+    use std::fs::read;
 
     #[test]
     fn test_encrypt() {
@@ -125,6 +152,20 @@ mod tests {
             "hunter2",
         );
         assert!(encrypt_result.is_ok());
+        assert_ne!(
+            encrypt_result.unwrap(),
+            b"Super secure information. Please do not share or read."
+        )
+    }
+
+    #[test]
+    fn test_encrypt_file() {
+        let content_result = read("test/random.txt");
+        assert!(content_result.is_ok());
+        let contents = content_result.unwrap();
+        let encrypt_result = encrypt(&contents, "hunter2");
+        assert!(encrypt_result.is_ok());
+        assert_ne!(contents, encrypt_result.unwrap())
     }
 
     #[test]
@@ -144,28 +185,26 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_nonce() {
-        let encrypt_result = encrypt(
-            b"Super secure information. Please do not share or read.",
-            "hunter2",
-        );
+    fn test_decrypt_file() {
+        let content_result = read("test/random.txt");
+        assert!(content_result.is_ok());
+        let contents = content_result.unwrap();
+        let encrypt_result = encrypt(&contents, "hunter2");
         assert!(encrypt_result.is_ok());
-        let encrypted = encrypt_result.unwrap();
-        let (nonce, _) = extract_nonce(&encrypted);
-        assert_eq!(nonce.len(), 24);
-        let decrypted = decrypt(&encrypted, "hunter2").unwrap();
-        assert_eq!(
-            std::str::from_utf8(&decrypted).unwrap(),
-            "Super secure information. Please do not share or read."
-        )
+        let decrypt_result = decrypt(&encrypt_result.unwrap(), "hunter2");
+        assert!(decrypt_result.is_ok());
+        let decrypted = decrypt_result.unwrap();
+        assert_eq!(decrypted, contents)
     }
 
     #[test]
-    fn test_argon() {
-        let hash_result = argon_hash_secret("hunter2");
-        assert!(hash_result.is_ok());
-        let compare_result = compare_argon_secret("hunter2", &hash_result.unwrap());
-        assert!(compare_result.is_ok());
-        assert!(compare_result.unwrap())
+    fn test_extract_salt_nonce() {
+        let encrypted = b"secret00000000000000000000000000000000111111111111111111111111";
+        let (salt, nonce, cipher) = extract_salt_nonce(encrypted);
+        assert_eq!(salt.len(), SALT_LEN);
+        assert_eq!(salt, b"00000000000000000000000000000000");
+        assert_eq!(nonce.len(), NONCE_LEN);
+        assert_eq!(nonce, b"111111111111111111111111");
+        assert_eq!(cipher, b"secret")
     }
 }
