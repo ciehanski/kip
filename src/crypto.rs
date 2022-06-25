@@ -52,7 +52,7 @@ pub fn encrypt(plaintext: &[u8], secret: &str) -> Result<Vec<u8>, Box<dyn Error>
     // Append salt to end of ciphertext; needed for decryption
     ciphertext.extend_from_slice(&salt);
     // Append nonce to end of ciphertext; needed for decryption
-    ciphertext.extend_from_slice(&nonce);
+    ciphertext.extend_from_slice(nonce);
     // Zeroize arguments
     // key and nonce are not zeroized since
     // they reference the below vectors
@@ -136,7 +136,7 @@ pub fn hash_secret_encoded(secret: &str) -> Result<String, argon2::Error> {
 }
 
 pub fn verify_argon_secret(secret: &str, hash: &str) -> Result<bool, argon2::Error> {
-    let matches = argon2::verify_encoded(&hash, secret.as_bytes())?;
+    let matches = argon2::verify_encoded(hash, secret.as_bytes())?;
     Ok(matches)
 }
 

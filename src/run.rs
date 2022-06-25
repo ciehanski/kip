@@ -17,7 +17,7 @@ use std::io::prelude::*;
 use std::io::Error as IOErr;
 use std::io::ErrorKind;
 use std::io::SeekFrom;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use walkdir::WalkDir;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -61,7 +61,7 @@ impl Run {
                 warn += 1;
                 let log = format!(
                     "[{}] {}-{} ⇉ '{}' can not be found.",
-                    Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                    Utc::now().format("%Y-%m-%d %H:%M:%S"),
                     job.name,
                     self.id,
                     f.path.display().to_string().red(),
@@ -95,7 +95,7 @@ impl Run {
                 if hash_ok && chunks_missing == 0 {
                     let log = format!(
                         "[{}] {}-{} ⇉ '{}' skipped, no changes found.",
-                        Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                        Utc::now().format("%Y-%m-%d %H:%M:%S"),
                         job.name,
                         self.id,
                         f.path.display().to_string().yellow(),
@@ -127,7 +127,7 @@ impl Run {
                             // Push logs
                             let log = format!(
                                 "[{}] {}-{} ⇉ '{}' uploaded successfully to '{}'.",
-                                Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                                Utc::now().format("%Y-%m-%d %H:%M:%S"),
                                 job.name,
                                 self.id,
                                 f.path.display().to_string().green(),
@@ -143,7 +143,7 @@ impl Run {
                         // Push logs
                         let log = format!(
                             "[{}] {}-{} ⇉ '{}' upload failed: {}.",
-                            Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                            Utc::now().format("%Y-%m-%d %H:%M:%S"),
                             job.name,
                             self.id,
                             f.path.display().to_string().red(),
@@ -189,7 +189,7 @@ impl Run {
                     if hash_ok && chunks_missing == 0 {
                         let log = format!(
                             "[{}] {}-{} ⇉ '{}' skipped, no changes found.",
-                            Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                            Utc::now().format("%Y-%m-%d %H:%M:%S"),
                             job.name,
                             self.id,
                             f.path.display().to_string().yellow(),
@@ -220,7 +220,7 @@ impl Run {
                                 // Push logs
                                 let log = format!(
                                     "[{}] {}-{} ⇉ '{}' uploaded successfully to '{}'.",
-                                    Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                                    Utc::now().format("%Y-%m-%d %H:%M:%S"),
                                     job.name,
                                     self.id,
                                     entry.path().display().to_string().green(),
@@ -236,7 +236,7 @@ impl Run {
                             // Push logs
                             let log = format!(
                                 "[{}] {}-{} ⇉ '{}' upload failed: {}.",
-                                Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                                Utc::now().format("%Y-%m-%d %H:%M:%S"),
                                 job.name,
                                 self.id,
                                 entry.path().display().to_string().red(),
@@ -276,7 +276,7 @@ impl Run {
         // Get output folder
         let output_folder = output_folder.unwrap_or_default();
         let dmd = metadata(&output_folder)?;
-        if !dmd.is_dir() || output_folder == "" {
+        if !dmd.is_dir() || output_folder.is_empty() {
             return Err(Box::new(IOErr::new(
                 ErrorKind::InvalidData,
                 "path provided is not a directory.",
@@ -300,7 +300,7 @@ impl Run {
                     }
                 };
                 // Strip the hash from S3 key
-                let hash = strip_hash_from_s3(&s3_key)?;
+                let hash = strip_hash_from_s3(s3_key)?;
                 if !fc.contains_key(&hash) {
                     // S3 object not found in this run
                     continue 's3;
@@ -320,8 +320,7 @@ impl Run {
                     // TODO: testing
                     // let mut chunk_bytes: Vec<u8> = vec![];
                     // Download chunk
-                    match s3_download(&s3_key, &job.aws_bucket, job.aws_region.clone(), secret)
-                        .await
+                    match s3_download(s3_key, &job.aws_bucket, job.aws_region.clone(), secret).await
                     {
                         Ok(chunk_bytes) => {
                             // Determine if single or multi-chunk file
@@ -334,7 +333,7 @@ impl Run {
                                     cfile.write_all(&chunk_bytes)?;
                                     println!(
                                         "[{}] {}-{} ⇉ '{}' restored successfully. ({}/{})",
-                                        Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                                        Utc::now().format("%Y-%m-%d %H:%M:%S"),
                                         job.name,
                                         self.id,
                                         local_path,
@@ -372,7 +371,7 @@ impl Run {
                         Err(e) => {
                             eprintln!(
                                 "[{}] {}-{} ⇉ '{}' restore failed: {}. ({}/{})",
-                                Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                                Utc::now().format("%Y-%m-%d %H:%M:%S"),
                                 job.name,
                                 self.id,
                                 local_path,
@@ -397,7 +396,7 @@ impl Run {
                 // Print logs
                 println!(
                     "[{}] {}-{} ⇉ '{}' restored successfully. ({}/{})",
-                    Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                    Utc::now().format("%Y-%m-%d %H:%M:%S"),
                     job.name,
                     self.id,
                     local_path.display().to_string().green(),
@@ -413,7 +412,7 @@ impl Run {
     // was split into a single or multiple chunks.
     fn is_single_chunk(&self, fc: &FileChunk) -> bool {
         let mut count: usize = 0;
-        for cf in self.files_changed.iter().into_iter() {
+        for cf in self.files_changed.iter() {
             for c in cf.values() {
                 if c.local_path == fc.local_path {
                     count += 1;
@@ -432,7 +431,7 @@ impl Run {
 // lengths and then save to the original local path
 fn assemble_chunks(
     mut chunks: Vec<(&FileChunk, Vec<u8>)>,
-    local_path: &PathBuf,
+    local_path: &Path,
     output_folder: &str,
 ) -> Result<(), Box<dyn Error>> {
     // Create file

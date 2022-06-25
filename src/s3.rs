@@ -13,12 +13,12 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::io::Error as IOErr;
 use std::io::ErrorKind;
-use std::path::PathBuf;
+use std::path::Path;
 use tokio::io::AsyncReadExt;
 use uuid::Uuid;
 
 pub async fn s3_upload(
-    f: &PathBuf,
+    f: &Path,
     chunks_map: HashMap<FileChunk, &[u8]>,
     fmd_len: u64,
     job_id: Uuid,
@@ -45,7 +45,7 @@ pub async fn s3_upload(
                 } else {
                     return Err(Box::new(IOErr::new(
                         ErrorKind::InvalidInput,
-                        format!("unable to get chunk from S3."),
+                        String::from("unable to get chunk from S3."),
                     )));
                 }
             }
@@ -96,7 +96,7 @@ pub async fn s3_download(
         _ => {
             return Err(Box::new(IOErr::new(
                 ErrorKind::InvalidData,
-                format!("unable to read response from S3."),
+                String::from("unable to read response from S3."),
             )));
         }
     };
@@ -161,22 +161,22 @@ pub async fn list_s3_bucket(
     for obj in contents {
         if let Some(key) = obj.key.clone() {
             // We expect jid to be Some since key was not nil
-            if let Some((jid, _)) = key.split_once("/") {
-                if jid == &job_id.to_string() {
+            if let Some((jid, _)) = key.split_once('/') {
+                if jid == job_id.to_string() {
                     corrected_contents.push(obj);
                 };
             } else {
                 // error splitting obj key returned from S3
                 return Err(Box::new(IOErr::new(
                     ErrorKind::InvalidInput,
-                    format!("error splitting chunk name from S3."),
+                    String::from("error splitting chunk name from S3."),
                 )));
             };
         } else {
             // error, no obj key returned from S3
             return Err(Box::new(IOErr::new(
                 ErrorKind::InvalidInput,
-                format!("unable to get chunk name from S3."),
+                String::from("unable to get chunk name from S3."),
             )));
         }
     }
@@ -203,7 +203,7 @@ pub async fn check_bucket(
             } else {
                 return Err(Box::new(IOErr::new(
                     ErrorKind::InvalidInput,
-                    format!("unable to get chunk name from S3."),
+                    String::from("unable to get chunk name from S3."),
                 )));
             }
         }

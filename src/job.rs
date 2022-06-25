@@ -77,7 +77,7 @@ impl Job {
 
     // Parse aws region input into a Region object
     fn parse_s3_region(s3_region: &str) -> Region {
-        match &s3_region[..] {
+        match s3_region {
             "ap-east-1" => Region::ApEast1,
             "ap-northeast-1" => Region::ApNortheast1,
             "ap-northeast-2" => Region::ApNortheast2,
@@ -105,14 +105,14 @@ impl Job {
         set_s3_env_vars(
             &self.s3_access_key,
             &self.s3_secret_key,
-            &self.aws_region.name(),
+            self.aws_region.name(),
         );
         // Create new run
         let mut r = Run::new(self.total_runs + 1);
         // Set job metadata
         self.last_status = KipStatus::IN_PROGRESS;
         // Tell the run to start uploading
-        match r.upload(&self, secret).await {
+        match r.upload(self, secret).await {
             Ok(_) => {}
             Err(e) => {
                 // Set job status
@@ -171,12 +171,12 @@ impl Job {
         set_s3_env_vars(
             &self.s3_access_key,
             &self.s3_secret_key,
-            &self.aws_region.name(),
+            self.aws_region.name(),
         );
         // Get run from job
         if let Some(r) = self.runs.get(&run) {
             // Tell the run to start uploading
-            match r.restore(&self, secret, output_folder).await {
+            match r.restore(self, secret, output_folder).await {
                 Ok(_) => (),
                 Err(e) => {
                     // Reset AWS env to nil

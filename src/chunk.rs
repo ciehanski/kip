@@ -39,7 +39,7 @@ impl FileChunk {
 // ref: https://github.com/nlfiedler/fastcdc-rs/blob/master/examples/dedupe.rs
 pub fn chunk_file(bytes: &[u8]) -> HashMap<FileChunk, &[u8]> {
     // Create a new chunker with an average size per chunk in bytes
-    let chunker = FastCDC::new(&bytes[..], MIN_SIZE, AVG_SIZE, MAX_SIZE);
+    let chunker = FastCDC::new(bytes, MIN_SIZE, AVG_SIZE, MAX_SIZE);
     // For each chunk generated, add it to chunks collection to return
     let mut chunks = HashMap::new();
     for entry in chunker {

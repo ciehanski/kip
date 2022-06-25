@@ -82,7 +82,7 @@ impl KipConf {
                     None => {
                         return Err(Box::new(std::io::Error::new(
                             ErrorKind::NotFound,
-                            format!("run not found."),
+                            String::from("run not found."),
                         )));
                     }
                 };

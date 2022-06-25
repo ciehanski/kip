@@ -95,10 +95,10 @@ async fn main() {
             let new_job = Job::new(
                 &job,
                 &encrypted_secret,
-                &s3_acc_key.trim_end(),
-                &s3_sec_key.trim_end(),
+                s3_acc_key.trim_end(),
+                s3_sec_key.trim_end(),
                 s3_bucket_name.trim_end(),
-                &s3_region.trim_end(),
+                s3_region.trim_end(),
             );
             // Push new job in config
             cfg.jobs.insert(job.clone(), new_job);
@@ -131,8 +131,8 @@ async fn main() {
             // to avoid duplication.
             for jf in &j.files {
                 for f in &file_path {
-                    if &jf.path.display().to_string()
-                        == &PathBuf::from(f)
+                    if jf.path.display().to_string()
+                        == PathBuf::from(f)
                             .canonicalize()
                             .expect("[ERR] unable to canonicalize path.")
                             .display()
@@ -478,7 +478,7 @@ async fn main() {
                         Cell::new(&j.name.to_string()),
                         Cell::new(&format!("{}", j.id)),
                         Cell::new(&j.aws_bucket.to_string()),
-                        Cell::new(&j.aws_region.name().to_string()),
+                        Cell::new(j.aws_region.name()),
                         Cell::new(&format!("{}", j.files_amt)),
                         Cell::new(&format!("{}", j.total_runs)),
                         Cell::new(&correct_last_run),
@@ -517,14 +517,14 @@ async fn main() {
                 let mut correct_files = String::new();
                 for f in files_vec {
                     correct_files.push_str(&f);
-                    correct_files.push_str("\n");
+                    correct_files.push('\n');
                 }
                 // Add row with job info
                 table.add_row(Row::new(vec![
                     Cell::new(&j.name.to_string()),
                     Cell::new(&format!("{}", j.id)),
                     Cell::new(&j.aws_bucket.to_string()),
-                    Cell::new(&j.aws_region.name().to_string()),
+                    Cell::new(j.aws_region.name()),
                     Cell::new(&correct_files),
                     Cell::new(&format!("{}", j.total_runs)),
                     Cell::new(&correct_last_run),
@@ -546,9 +546,9 @@ async fn main() {
                 let r = j.runs.get(&run.unwrap()).unwrap();
                 // Add row with run info
                 table.add_row(Row::new(vec![
-                    Cell::new(&format!("{}-{}", j.name.to_string(), r.id)),
+                    Cell::new(&format!("{}-{}", j.name, r.id)),
                     Cell::new(&j.aws_bucket.to_string()),
-                    Cell::new(&j.aws_region.name().to_string()),
+                    Cell::new(j.aws_region.name()),
                     Cell::new(&format!("{}", r.files_changed.len())),
                     Cell::new(&convert(r.bytes_uploaded as f64)),
                     Cell::new(&r.time_elapsed.to_string()),
@@ -560,8 +560,8 @@ async fn main() {
                 // Pretty print logs
                 let mut pretty_logs = String::new();
                 for l in r.logs.iter() {
-                    pretty_logs.push_str(&l);
-                    pretty_logs.push_str("\n");
+                    pretty_logs.push_str(l);
+                    pretty_logs.push('\n');
                 }
                 if pretty_logs.is_empty() {
                     pretty_logs.push_str("None");
