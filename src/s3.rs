@@ -25,31 +25,12 @@ pub async fn s3_upload(
     aws_bucket: String,
     aws_region: Region,
     secret: &str,
-) -> Result<HashMap<String, FileChunk>, Box<dyn Error>> {
+) -> Result<Vec<FileChunk>, Box<dyn Error>> {
     // Create S3 client
     let s3_client = S3Client::new(aws_region.clone());
-    let s3_objs = list_s3_bucket(&aws_bucket, aws_region.clone(), job_id).await?;
     // Upload each chunk
-    let mut chunks = HashMap::new();
-    'outer: for (mut chunk, chunk_bytes) in chunks_map {
-        // Check S3 for duplicates of chunk
-        let s3_objs = s3_objs.clone();
-        // If the S3 bucket is empty, no need to check for duplicate chunks
-        if !s3_objs.is_empty() {
-            for obj in s3_objs {
-                if let Some(obj_key) = obj.key {
-                    if obj_key.contains(&chunk.hash) {
-                        // Duplicate chunk found, skip this chunk
-                        continue 'outer;
-                    }
-                } else {
-                    return Err(Box::new(IOErr::new(
-                        ErrorKind::InvalidInput,
-                        String::from("unable to get chunk from S3."),
-                    )));
-                }
-            }
-        }
+    let mut chunks = vec![];
+    for (mut chunk, chunk_bytes) in chunks_map {
         // Encrypt chunk
         let encrypted = match encrypt(chunk_bytes, secret) {
             Ok(ec) => ec,
@@ -60,6 +41,7 @@ pub async fn s3_upload(
                 )));
             }
         };
+        // Upload
         s3_client
             .put_object(PutObjectRequest {
                 bucket: aws_bucket.clone(),
@@ -71,7 +53,7 @@ pub async fn s3_upload(
             .await?;
         // Push chunk onto chunks hashmap for return
         chunk.local_path = f.canonicalize()?;
-        chunks.insert(chunk.hash.to_string(), chunk);
+        chunks.push(chunk);
     }
     Ok(chunks)
 }

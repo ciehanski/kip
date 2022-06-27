@@ -3,16 +3,15 @@
 //
 
 use crate::chunk::{chunk_file, FileChunk};
-use crate::job::{Job, KipStatus};
+use crate::job::{Job, KipFile, KipStatus};
 use crate::s3::{check_bucket, list_s3_bucket, s3_download, s3_upload};
 use chrono::prelude::*;
 use colored::*;
 use crypto_hash::{hex_digest, Algorithm};
 use humantime::format_duration;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::error::Error;
-use std::fs::{create_dir_all, metadata, File, OpenOptions};
+use std::fs::{create_dir_all, metadata, File, Metadata, OpenOptions};
 use std::io::prelude::*;
 use std::io::Error as IOErr;
 use std::io::ErrorKind;
@@ -27,7 +26,7 @@ pub struct Run {
     pub time_elapsed: String,
     pub finished: DateTime<Utc>,
     pub bytes_uploaded: u64,
-    pub files_changed: Vec<HashMap<String, FileChunk>>,
+    pub files_changed: Vec<FileChunk>,
     pub status: KipStatus,
     pub logs: Vec<String>,
 }
@@ -54,7 +53,7 @@ impl Run {
         let mut bytes_uploaded: u64 = 0;
         // TODO: create futures for each file iteration
         // and join at the end of this function to let
-        // tokio handle thread management
+        // for concurrent uploads
         for f in job.files.iter() {
             // Check if file or directory exists
             if !f.path.exists() {
@@ -73,84 +72,13 @@ impl Run {
             // Check if f is file or directory
             let fmd = metadata(&f.path)?;
             if fmd.is_file() {
-                // Get file hash and compare with stored file hash in
-                // KipFile. If the same, continue the loop
-                // Before opening file, determine how large it is
-                // If larger than 100MB, mmap the sucker, if not, just read it
-                let file = tokio::fs::read(&f.path).await?;
-                let digest = hex_digest(Algorithm::SHA256, &file);
-                // Check if all file chunks are already in S3
-                // to avoid overwite and needless upload
-                let chunks_map = chunk_file(&file);
-                let hash_ok = f.hash == digest;
-                let mut chunks_missing: usize = 0;
-                for (chunk, _) in chunks_map.iter() {
-                    let chunk_in_s3 =
-                        check_bucket(&job.aws_bucket, job.aws_region.clone(), job.id, &chunk.hash)
-                            .await?;
-                    if !chunk_in_s3 {
-                        chunks_missing += 1;
-                    };
-                }
-                if hash_ok && chunks_missing == 0 {
-                    let log = format!(
-                        "[{}] {}-{} ⇉ '{}' skipped, no changes found.",
-                        Utc::now().format("%Y-%m-%d %H:%M:%S"),
-                        job.name,
-                        self.id,
-                        f.path.display().to_string().yellow(),
-                    );
-                    self.logs.push(log.clone());
-                    println!("{}", log);
-                    continue;
-                }
-                // Upload
-                match s3_upload(
-                    &f.path.canonicalize()?,
-                    chunks_map,
-                    fmd.len(),
-                    job.id,
-                    job.aws_bucket.clone(),
-                    job.aws_region.clone(),
-                    secret,
-                )
-                .await
-                {
-                    Ok(chunked_file) => {
-                        // Confirm the chunked file is not empty AKA
-                        // this chunk has not been modified, skip it
-                        if !chunked_file.is_empty() {
-                            // Increase bytes uploaded for this run
-                            bytes_uploaded += fmd.len();
-                            // Push chunked file onto run's changed files
-                            self.files_changed.push(chunked_file);
-                            // Push logs
-                            let log = format!(
-                                "[{}] {}-{} ⇉ '{}' uploaded successfully to '{}'.",
-                                Utc::now().format("%Y-%m-%d %H:%M:%S"),
-                                job.name,
-                                self.id,
-                                f.path.display().to_string().green(),
-                                job.aws_bucket.clone(),
-                            );
-                            self.logs.push(log.clone());
-                            println!("{}", log);
-                        }
+                match self.upload_inner(f, fmd.clone(), job, secret).await {
+                    Ok(bu) => {
+                        bytes_uploaded += bu;
                     }
-                    Err(e) => {
-                        // Set run status to ERR
+                    Err(_) => {
                         err += 1;
-                        // Push logs
-                        let log = format!(
-                            "[{}] {}-{} ⇉ '{}' upload failed: {}.",
-                            Utc::now().format("%Y-%m-%d %H:%M:%S"),
-                            job.name,
-                            self.id,
-                            f.path.display().to_string().red(),
-                            e,
-                        );
-                        self.logs.push(log.clone());
-                        println!("{}", log);
+                        continue;
                     }
                 };
             } else if fmd.is_dir() {
@@ -165,85 +93,13 @@ impl Run {
                     if fmd.is_dir() {
                         continue;
                     }
-                    // Get file hash and compare with stored file hash in
-                    // KipFile. If the same, continue the loop
-                    let file = tokio::fs::read(&f.path).await?;
-                    let digest = hex_digest(Algorithm::SHA256, &file);
-                    // Check if all file chunks are already in S3
-                    // to avoid overwite and needless upload
-                    let chunks_map = chunk_file(&file);
-                    let hash_ok = f.hash == digest;
-                    let mut chunks_missing: usize = 0;
-                    for (chunk, _) in chunks_map.iter() {
-                        let chunk_in_s3 = check_bucket(
-                            &job.aws_bucket,
-                            job.aws_region.clone(),
-                            job.id,
-                            &chunk.hash,
-                        )
-                        .await?;
-                        if !chunk_in_s3 {
-                            chunks_missing += 1;
-                        };
-                    }
-                    if hash_ok && chunks_missing == 0 {
-                        let log = format!(
-                            "[{}] {}-{} ⇉ '{}' skipped, no changes found.",
-                            Utc::now().format("%Y-%m-%d %H:%M:%S"),
-                            job.name,
-                            self.id,
-                            f.path.display().to_string().yellow(),
-                        );
-                        self.logs.push(log.clone());
-                        println!("{}", log);
-                        continue;
-                    }
-                    // Upload
-                    match s3_upload(
-                        &entry.path().canonicalize()?,
-                        chunks_map,
-                        fmd.len(),
-                        job.id,
-                        job.aws_bucket.clone(),
-                        job.aws_region.clone(),
-                        secret,
-                    )
-                    .await
-                    {
-                        Ok(chunked_file) => {
-                            // Confirm the chunked file is not empty
-                            if !chunked_file.is_empty() {
-                                // Increase bytes uploaded for this run
-                                bytes_uploaded += fmd.len();
-                                // Push chunked file onto run's changed files
-                                self.files_changed.push(chunked_file);
-                                // Push logs
-                                let log = format!(
-                                    "[{}] {}-{} ⇉ '{}' uploaded successfully to '{}'.",
-                                    Utc::now().format("%Y-%m-%d %H:%M:%S"),
-                                    job.name,
-                                    self.id,
-                                    entry.path().display().to_string().green(),
-                                    job.aws_bucket.clone(),
-                                );
-                                self.logs.push(log.clone());
-                                println!("{}", log);
-                            }
+                    match self.upload_inner(f, fmd.clone(), job, secret).await {
+                        Ok(bu) => {
+                            bytes_uploaded += bu;
                         }
-                        Err(e) => {
-                            // Set run status to ERR
+                        Err(_) => {
                             err += 1;
-                            // Push logs
-                            let log = format!(
-                                "[{}] {}-{} ⇉ '{}' upload failed: {}.",
-                                Utc::now().format("%Y-%m-%d %H:%M:%S"),
-                                job.name,
-                                self.id,
-                                entry.path().display().to_string().red(),
-                                e,
-                            );
-                            self.logs.push(log.clone());
-                            println!("{}", log);
+                            continue;
                         }
                     };
                 }
@@ -264,15 +120,105 @@ impl Run {
         Ok(())
     }
 
+    async fn upload_inner(
+        &mut self,
+        f: &KipFile,
+        fmd: Metadata,
+        job: &Job,
+        secret: &str,
+    ) -> Result<u64, Box<dyn Error>> {
+        // Get file hash and compare with stored file hash in
+        // KipFile. If the same, continue the loop
+        // Before opening file, determine how large it is
+        // If larger than 100MB, mmap the sucker, if not, just read it
+        let file = tokio::fs::read(&f.path).await?;
+        let digest = hex_digest(Algorithm::SHA256, &file);
+        // Check if all file chunks are already in S3
+        // to avoid overwite and needless upload
+        let chunks_map = chunk_file(&file);
+        let hash_ok = f.hash == digest;
+        let mut chunks_missing: usize = 0;
+        let mut bytes_uploaded: u64 = 0;
+        for (chunk, _) in chunks_map.iter() {
+            let chunk_in_s3 =
+                check_bucket(&job.aws_bucket, job.aws_region.clone(), job.id, &chunk.hash).await?;
+            if !chunk_in_s3 {
+                chunks_missing += 1;
+            };
+        }
+        // If hash is the same and no chunks are missing from S3
+        // skip uploading this file
+        if hash_ok && chunks_missing == 0 {
+            let log = format!(
+                "[{}] {}-{} ⇉ '{}' skipped, no changes found.",
+                Utc::now().format("%Y-%m-%d %H:%M:%S"),
+                job.name,
+                self.id,
+                f.path.display().to_string().yellow(),
+            );
+            self.logs.push(log.clone());
+            println!("{}", log);
+        } else {
+            // Upload
+            match s3_upload(
+                &f.path.canonicalize()?,
+                chunks_map,
+                fmd.len(),
+                job.id,
+                job.aws_bucket.clone(),
+                job.aws_region.clone(),
+                secret,
+            )
+            .await
+            {
+                Ok(chunked_file) => {
+                    // Confirm the chunked file is not empty AKA
+                    // this chunk has not been modified, skip it
+                    if !chunked_file.is_empty() {
+                        // Increase bytes uploaded for this run
+                        bytes_uploaded += fmd.len();
+                        // Push chunks onto run's changed files
+                        for c in chunked_file {
+                            self.files_changed.push(c);
+                        }
+                        // Push logs
+                        let log = format!(
+                            "[{}] {}-{} ⇉ '{}' uploaded successfully to '{}'.",
+                            Utc::now().format("%Y-%m-%d %H:%M:%S"),
+                            job.name,
+                            self.id,
+                            f.path.display().to_string().green(),
+                            job.aws_bucket.clone(),
+                        );
+                        self.logs.push(log.clone());
+                        println!("{}", log);
+                    }
+                }
+                Err(e) => {
+                    // Set run status to ERR
+                    // Push logs
+                    let log = format!(
+                        "[{}] {}-{} ⇉ '{}' upload failed: {}.",
+                        Utc::now().format("%Y-%m-%d %H:%M:%S"),
+                        job.name,
+                        self.id,
+                        f.path.display().to_string().red(),
+                        e,
+                    );
+                    self.logs.push(log.clone());
+                    println!("{}", log);
+                }
+            };
+        }
+        Ok(bytes_uploaded)
+    }
+
     pub async fn restore(
         &self,
         job: &Job,
         secret: &str,
         output_folder: Option<String>,
     ) -> Result<(), Box<dyn Error>> {
-        // Get all bucket contents
-        let bucket_objects =
-            list_s3_bucket(&job.aws_bucket, job.aws_region.clone(), job.id).await?;
         // Get output folder
         let output_folder = output_folder.unwrap_or_default();
         let dmd = metadata(&output_folder)?;
@@ -282,6 +228,9 @@ impl Run {
                 "path provided is not a directory.",
             )));
         }
+        // Get all bucket contents
+        let bucket_objects =
+            list_s3_bucket(&job.aws_bucket, job.aws_region.clone(), job.id).await?;
         // For each object in the bucket, download it
         let mut counter: usize = 0;
         'files: for fc in self.files_changed.iter() {
@@ -301,72 +250,40 @@ impl Run {
                 };
                 // Strip the hash from S3 key
                 let hash = strip_hash_from_s3(s3_key)?;
-                if !fc.contains_key(&hash) {
+                if fc.hash != hash {
                     // S3 object not found in this run
                     continue 's3;
                 } else {
                     // Found a chunk for this file! Download
                     // this chunk
-                    let local_path = match fc.get(&hash) {
-                        Some(c) => c.local_path.display().to_string().green(),
-                        _ => {
-                            return Err(Box::new(IOErr::new(
-                                ErrorKind::NotFound,
-                                "unable to get chunk's local path.",
-                            )))
-                        }
-                    };
-                    // Store the returned downloaded and decrypted bytes for chunk
-                    // TODO: testing
-                    // let mut chunk_bytes: Vec<u8> = vec![];
+                    let local_path = fc.local_path.display().to_string().green();
                     // Download chunk
                     match s3_download(s3_key, &job.aws_bucket, job.aws_region.clone(), secret).await
                     {
                         Ok(chunk_bytes) => {
                             // Determine if single or multi-chunk file
-                            for (_, chunk) in fc.iter() {
-                                if self.is_single_chunk(chunk) {
-                                    // Increment file resote counter
-                                    counter += 1;
-                                    // If a single-chunk file, simply decrypt and write
-                                    let mut cfile = create_file(&chunk.local_path, &output_folder)?;
-                                    cfile.write_all(&chunk_bytes)?;
-                                    println!(
-                                        "[{}] {}-{} ⇉ '{}' restored successfully. ({}/{})",
-                                        Utc::now().format("%Y-%m-%d %H:%M:%S"),
-                                        job.name,
-                                        self.id,
-                                        local_path,
-                                        counter,
-                                        self.files_changed.len(),
-                                    );
-                                    continue 'files;
-                                } else {
-                                    // If a multi-chunk file pass to multi-chunk vec
-                                    // for re-assembly after loop finishes
-                                    // TODO: I don't like chunk_bytes.clone() here
-                                    multi_chunks.push((chunk, chunk_bytes.clone()));
-                                }
+                            if self.is_single_chunk(fc) {
+                                // Increment file resote counter
+                                counter += 1;
+                                // If a single-chunk file, simply decrypt and write
+                                let mut cfile = create_file(&fc.local_path, &output_folder)?;
+                                cfile.write_all(&chunk_bytes)?;
+                                println!(
+                                    "[{}] {}-{} ⇉ '{}' restored successfully. ({}/{})",
+                                    Utc::now().format("%Y-%m-%d %H:%M:%S"),
+                                    job.name,
+                                    self.id,
+                                    local_path,
+                                    counter,
+                                    self.files_changed.len(),
+                                );
+                                continue 'files;
+                            } else {
+                                // If a multi-chunk file pass to multi-chunk vec
+                                // for re-assembly after loop finishes
+                                // TODO: I don't like chunk_bytes.clone() here
+                                multi_chunks.push((fc, chunk_bytes.clone()));
                             }
-                            // Here, we create a vec of all chunks associated with larger,
-                            // multi-chunk files. Loops until all files and their chunks
-                            // have been sorted by offset and len and written to disk.
-                            // let mut mc_len: usize = multi_chunks.len();
-                            // while mc_len != 0 {
-                            //     let mut same_file_chunks = vec![];
-                            //     for (i, c) in multi_chunks.iter().enumerate() {
-                            //         if i == multi_chunks.len() - 1 || mc_len == 0 {
-                            //             break;
-                            //         }
-                            //         if c.0.local_path == multi_chunks[i + 1].0.local_path {
-                            //             same_file_chunks.push(*c);
-                            //             mc_len -= 1;
-                            //         }
-                            //     }
-                            //     // Here, we sort all the chunks by thier offset and
-                            //     // combine the chunks and write the file
-                            //     assemble_chunks(same_file_chunks, &output_folder)?;
-                            // }
                         }
                         Err(e) => {
                             eprintln!(
@@ -412,11 +329,9 @@ impl Run {
     // was split into a single or multiple chunks.
     fn is_single_chunk(&self, fc: &FileChunk) -> bool {
         let mut count: usize = 0;
-        for cf in self.files_changed.iter() {
-            for c in cf.values() {
-                if c.local_path == fc.local_path {
-                    count += 1;
-                }
+        for c in self.files_changed.iter() {
+            if c.local_path == fc.local_path {
+                count += 1;
             }
         }
         if count > 1 {
