@@ -195,7 +195,6 @@ impl Run {
                     }
                 }
                 Err(e) => {
-                    // Set run status to ERR
                     // Push logs
                     let log = format!(
                         "[{}] {}-{} ⇉ '{}' upload failed: {}.",
@@ -419,13 +418,15 @@ mod tests {
         assert!(content_result.is_ok());
         let contents = content_result.unwrap();
         let chunk_hmap = chunk_file(&contents);
-        let mut t = HashMap::new();
+        let mut t = vec![];
         let mut fc = FileChunk::new("", 0, 0, 0);
         for c in chunk_hmap {
-            t.insert(c.0.hash.clone(), c.0.clone());
+            t.push(c.0.clone());
             fc = c.0;
         }
-        r.files_changed.push(t);
+        for cc in t {
+            r.files_changed.push(cc);
+        }
         assert!(r.is_single_chunk(&fc))
     }
 
@@ -436,13 +437,15 @@ mod tests {
         assert!(content_result.is_ok());
         let contents = content_result.unwrap();
         let chunk_hmap = chunk_file(&contents);
-        let mut t = HashMap::new();
+        let mut t = vec![];
         let mut fc = FileChunk::new("", 0, 0, 0);
         for c in chunk_hmap {
-            t.insert(c.0.hash.clone(), c.0.clone());
+            t.push(c.0.clone());
             fc = c.0;
         }
-        r.files_changed.push(t);
+        for cc in t {
+            r.files_changed.push(cc);
+        }
         assert!(!r.is_single_chunk(&fc))
     }
 
