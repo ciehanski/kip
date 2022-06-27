@@ -222,7 +222,7 @@ impl Job {
                     set_s3_env_vars(
                         &self.s3_access_key,
                         &self.s3_secret_key,
-                        &self.aws_region.name(),
+                        self.aws_region.name(),
                     );
                     // Delete
                     delete_s3_object(&self.aws_bucket, self.aws_region.clone(), &path).await?;
