@@ -235,60 +235,15 @@ async fn main() {
                             });
                             // Find all the runs that contain this file's chunks
                             // and remove them from S3.
-                            for run in j.runs.iter() {
-                                for fc in run.1.files_changed.iter() {
-                                    for chunk in fc.values() {
-                                        if chunk.local_path
-                                            == PathBuf::from(&f)
-                                                .canonicalize()
-                                                .expect("[ERR] failed to get files amount for job.")
-                                        {
-                                            let mut path = String::new();
-                                            path.push_str(&j.id.to_string());
-                                            let mut cpath = chunk
-                                                .local_path
-                                                .parent()
-                                                .expect("[ERR] unable to canonicalize path.")
-                                                .display()
-                                                .to_string();
-                                            cpath.push_str(&format!("/{}.chunk", chunk.hash));
-                                            path.push_str(&cpath);
-                                            // Set AWS env vars for backup
-                                            std::env::set_var(
-                                                "AWS_ACCESS_KEY_ID",
-                                                &j.s3_access_key,
-                                            );
-                                            std::env::set_var(
-                                                "AWS_SECRET_ACCESS_KEY",
-                                                &j.s3_secret_key,
-                                            );
-                                            std::env::set_var("AWS_REGION", &j.aws_region.name());
-                                            match kip::s3::delete_s3_object(
-                                                &j.aws_bucket,
-                                                j.aws_region.clone(),
-                                                &path,
-                                            )
-                                            .await
-                                            {
-                                                Ok(_) => (),
-                                                Err(e) => {
-                                                    terminate!(
-                                                        13,
-                                                        "{} unable to delete '{}' from S3: '{}'.",
-                                                        "[ERR]".red(),
-                                                        f,
-                                                        e,
-                                                    );
-                                                }
-                                            };
-                                            // Reset AWS env env to nil
-                                            std::env::set_var("AWS_ACCESS_KEY_ID", "");
-                                            std::env::set_var("AWS_SECRET_ACCESS_KEY", "");
-                                            std::env::set_var("AWS_REGION", "");
-                                        }
-                                    }
-                                }
-                            }
+                            j.remove_file(&f).await.unwrap_or_else(|e| {
+                                terminate!(
+                                    21,
+                                    "{} failed to remove files from S3 for {}: {}.",
+                                    "[ERR]".red(),
+                                    &job,
+                                    e
+                                );
+                            })
                         } else {
                             terminate!(
                                 2,
@@ -450,7 +405,6 @@ async fn main() {
             let cfg = cfg.read().await;
             // Create the table
             let mut table = Table::new();
-            //
             if job == None && run == None {
                 // Create the title row
                 table.add_row(Row::new(vec![
@@ -498,7 +452,14 @@ async fn main() {
                     Cell::new("Last Run"),
                     Cell::new("Status"),
                 ]));
-                let j = cfg.jobs.get(&job.unwrap()).unwrap();
+                let j = cfg.jobs.get(&job.clone().unwrap()).unwrap_or_else(|| {
+                    terminate!(
+                        2,
+                        "{} job '{}' doesn't exist.",
+                        "[ERR]".red(),
+                        &job.clone().unwrap()
+                    );
+                });
                 // For each job, add a row
                 let correct_last_run = if j.last_run.format("%Y-%m-%d %H:%M:%S").to_string()
                     == "1970-01-01 00:00:00"
@@ -542,8 +503,23 @@ async fn main() {
                     Cell::new("Runtime"),
                     Cell::new("Status"),
                 ]));
-                let j = cfg.jobs.get(&job.unwrap()).unwrap();
-                let r = j.runs.get(&run.unwrap()).unwrap();
+                let j = cfg.jobs.get(&job.clone().unwrap()).unwrap_or_else(|| {
+                    terminate!(
+                        2,
+                        "{} job '{}' doesn't exist.",
+                        "[ERR]".red(),
+                        &job.clone().unwrap()
+                    );
+                });
+                let r = j.runs.get(&run.unwrap()).unwrap_or_else(|| {
+                    terminate!(
+                        2,
+                        "{} run '{}' doesn't exist for job '{}.'",
+                        "[ERR]".red(),
+                        &run.unwrap(),
+                        &job.clone().unwrap(),
+                    );
+                });
                 // Add row with run info
                 table.add_row(Row::new(vec![
                     Cell::new(&format!("{}-{}", j.name, r.id)),

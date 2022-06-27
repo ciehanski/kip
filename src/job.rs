@@ -3,6 +3,7 @@
 //
 
 use crate::run::Run;
+use crate::s3::delete_s3_object;
 use chrono::prelude::*;
 use colored::*;
 use crypto_hash::{hex_digest, Algorithm};
@@ -198,6 +199,38 @@ impl Job {
         // Reset AWS env to nil
         zeroize_s3_env_vars();
         // Success
+        Ok(())
+    }
+
+    pub async fn remove_file(&mut self, f: &str) -> Result<(), Box<dyn Error>> {
+        // Find all the runs that contain this file's chunks
+        // and remove them from S3.
+        for run in self.runs.iter() {
+            for chunk in run.1.files_changed.iter() {
+                if chunk.local_path == PathBuf::from(&f).canonicalize()? {
+                    let mut path = String::new();
+                    path.push_str(&self.id.to_string());
+                    let mut cpath = chunk
+                        .local_path
+                        .parent()
+                        .expect("[ERR] unable to get parent path.")
+                        .display()
+                        .to_string();
+                    cpath.push_str(&format!("/{}.chunk", chunk.hash));
+                    path.push_str(&cpath);
+                    // Set AWS env vars for backup
+                    set_s3_env_vars(
+                        &self.s3_access_key,
+                        &self.s3_secret_key,
+                        &self.aws_region.name(),
+                    );
+                    // Delete
+                    delete_s3_object(&self.aws_bucket, self.aws_region.clone(), &path).await?;
+                    // Reset AWS env env to nil
+                    zeroize_s3_env_vars();
+                }
+            }
+        }
         Ok(())
     }
 
