@@ -2,108 +2,107 @@
 // Copyright (c) 2020 Ryan Ciehanski <ryan@ciehanski.com>
 //
 
-use structopt::StructOpt;
+use clap::{Parser, Subcommand};
 
-#[derive(StructOpt)]
-#[structopt(name = "kip", about = "kip, the simple encrypted backups tool.")]
-pub struct Opt {
+#[derive(Debug, Parser)]
+#[clap(name = "kip")]
+#[clap(version, about, author, long_about = None)]
+pub struct Cli {
     /// Subcommands
-    #[structopt(subcommand)]
+    #[clap(subcommand)]
     pub subcommands: Subcommands,
-    /// Display debug messages
-    #[structopt(global = true, short = "d", long = "debug")]
-    pub debug: bool,
+    // Display debug messages
+    #[clap(global = true, short = 'd', long = "debug")]
+    pub debug: Option<bool>,
 }
 
-#[derive(StructOpt)]
+#[derive(Debug, Subcommand)]
 pub enum Subcommands {
     /// Creates a new job
-    ///
-    #[structopt(name = "init")]
+    #[clap(arg_required_else_help = true)]
     Init {
         /// Name of the job you want to create
+        #[clap(value_parser)]
         job: String,
     },
 
     /// Adds file(s) to a job
-    ///
-    #[structopt(name = "add")]
+    #[clap(arg_required_else_help = true)]
     Add {
         /// Name of the job you want to add files to
+        #[clap(value_parser)]
         job: String,
         /// The paths of all files to add to job
-        #[structopt(short = "f", long = "files")]
+        #[clap(short = 'f', long = "files", value_parser)]
         file_path: Vec<String>,
     },
 
     /// Removes file(s) from a job
-    ///
-    #[structopt(name = "remove", alias = "rm")]
+    #[clap(alias = "rm", arg_required_else_help = true)]
     Remove {
         /// Name of the job you want to remove files from
+        #[clap(value_parser)]
         job: String,
-        /// The paths of all files to remove remove job
-        #[structopt(short = "f", long = "files")]
+        /// The paths of all files to remove from job
+        #[clap(short = 'f', long = "files", value_parser)]
         file_path: Option<Vec<String>>,
         /// Purge file from all previous backups
-        #[structopt(short = "p", long = "purge")]
+        #[clap(short = 'p', long = "purge", value_parser)]
         purge: Option<bool>,
     },
 
     /// Starts a manual backup job
-    ///
-    #[structopt(name = "push")]
+    #[clap(arg_required_else_help = true)]
     Push {
         /// Name of the job you want to start
+        #[clap(value_parser)]
         job: String,
     },
 
     /// Starts a restore of a job
-    ///
-    #[structopt(name = "pull")]
+    #[clap(arg_required_else_help = true)]
     Pull {
         /// Name of the job you want to restore from
+        #[clap(value_parser)]
         job: String,
         /// Number of the job's run to restore from
-        #[structopt(short = "r", long = "run")]
+        #[clap(short = 'r', long = "run", value_parser)]
         run: usize,
         /// Folder to restore files into
-        #[structopt(short = "o", long = "output")]
+        #[clap(short = 'o', long = "output", value_parser)]
         output_folder: Option<String>,
     },
 
     /// Aborts any running or future upload on job
-    ///
-    #[structopt(name = "abort")]
+    #[clap(arg_required_else_help = true)]
     Abort {
         /// Name of the job you want to abort
+        #[clap(value_parser)]
         job: String,
     },
 
-    /// Returns the status of a job or run
-    ///
-    #[structopt(name = "status")]
+    /// Prints the status of a job or run
+    #[clap(arg_required_else_help = true)]
     Status {
         /// Name of the job you want to get status from
+        #[clap(value_parser)]
         job: String,
-        /// Number of the job
-        #[structopt(short = "r", long = "run")]
+        /// Number of the run you want to get status from
+        #[clap(short = 'r', long = "run", value_parser)]
         run: Option<usize>,
     },
 
     /// Lists jobs, runs, and their configurations
-    ///
-    #[structopt(name = "list", alias = "ls")]
+    #[clap(alias = "ls")]
     List {
         /// Name of the job you want to list
+        #[clap(value_parser)]
         job: Option<String>,
-        /// Name of the run you want to list
-        #[structopt(short = "r", long = "run")]
+        /// Number of the run you want to list
+        #[clap(short = 'r', long = "run", value_parser)]
         run: Option<usize>,
     },
 
     /// Runs kip in daemon service mode
-    ///
-    #[structopt(name = "daemon", alias = "d")]
     Daemon {},
 }

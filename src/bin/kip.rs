@@ -3,10 +3,11 @@
 //
 
 use chrono::prelude::*;
+use clap::Parser;
 use colored::*;
 use dialoguer::Confirm;
 use dialoguer::Password;
-use kip::args::{Opt, Subcommands};
+use kip::args::{Cli, Subcommands};
 use kip::conf::KipConf;
 use kip::crypto::{keyring_get_secret, keyring_set_secret};
 use kip::job::{Job, KipFile};
@@ -15,7 +16,6 @@ use prettytable::{Cell, Row, Table};
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use structopt::StructOpt;
 
 #[tokio::main]
 async fn main() {
@@ -31,8 +31,8 @@ async fn main() {
     let cfg = Arc::clone(&cfg_file);
 
     // Get subcommands and args
-    let args: Opt = Opt::from_args();
-    // let _debug = args.debug;
+    let args = Cli::parse();
+    let _debug = args.debug;
 
     // Match user input command
     match args.subcommands {
