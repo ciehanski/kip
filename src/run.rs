@@ -9,6 +9,7 @@ use chrono::prelude::*;
 use colored::*;
 use crypto_hash::{hex_digest, Algorithm};
 use humantime::format_duration;
+use memmap2::MmapOptions;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fs::{create_dir_all, metadata, File, Metadata, OpenOptions};
@@ -127,11 +128,15 @@ impl Run {
         job: &Job,
         secret: &str,
     ) -> Result<u64, Box<dyn Error>> {
-        // Get file hash and compare with stored file hash in
-        // KipFile. If the same, continue the loop
         // Before opening file, determine how large it is
-        // If larger than 100MB, mmap the sucker, if not, just read it
-        let file = tokio::fs::read(&f.path).await?;
+        // If larger than 500 MB, mmap the sucker, if not, just read it
+        let mut file = vec![];
+        if fmd.len() > (500 * 1024 * 1024) {
+            let mmap = unsafe { MmapOptions::new().populate().map(&File::open(&f.path)?)? };
+            file.extend_from_slice(&mmap[..]);
+        } else {
+            file.extend_from_slice(&tokio::fs::read(&f.path).await?);
+        }
         let digest = hex_digest(Algorithm::SHA256, &file);
         // Check if all file chunks are already in S3
         // to avoid overwite and needless upload

@@ -25,7 +25,7 @@ pub enum Subcommands {
         job: String,
     },
 
-    /// Adds files to a job
+    /// Adds file(s) to a job
     ///
     #[structopt(name = "add")]
     Add {
@@ -36,7 +36,7 @@ pub enum Subcommands {
         file_path: Vec<String>,
     },
 
-    /// Removes files from a job
+    /// Removes file(s) from a job
     ///
     #[structopt(name = "remove", alias = "rm")]
     Remove {
@@ -45,6 +45,9 @@ pub enum Subcommands {
         /// The paths of all files to remove remove job
         #[structopt(short = "f", long = "files")]
         file_path: Option<Vec<String>>,
+        /// Purge file from all previous backups
+        #[structopt(short = "p", long = "purge")]
+        purge: Option<bool>,
     },
 
     /// Starts a manual backup job
@@ -61,10 +64,10 @@ pub enum Subcommands {
     Pull {
         /// Name of the job you want to restore from
         job: String,
-        /// Number of the jobs run to restore from
+        /// Number of the job's run to restore from
         #[structopt(short = "r", long = "run")]
         run: usize,
-        /// Folder to restore files to
+        /// Folder to restore files into
         #[structopt(short = "o", long = "output")]
         output_folder: Option<String>,
     },
@@ -77,23 +80,24 @@ pub enum Subcommands {
         job: String,
     },
 
-    /// Gets the status of a job
+    /// Returns the status of a job or run
     ///
     #[structopt(name = "status")]
     Status {
         /// Name of the job you want to get status from
         job: String,
+        /// Number of the job
+        #[structopt(short = "r", long = "run")]
+        run: Option<usize>,
     },
 
-    /// Lists all jobs and their configurations
+    /// Lists jobs, runs, and their configurations
     ///
     #[structopt(name = "list", alias = "ls")]
     List {
         /// Name of the job you want to list
-        ///
         job: Option<String>,
         /// Name of the run you want to list
-        ///
         #[structopt(short = "r", long = "run")]
         run: Option<usize>,
     },

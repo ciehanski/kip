@@ -1,10 +1,10 @@
 //
 // Copyright (c) 2022 Ryan Ciehanski <ryan@ciehanski.com>
 //
-
 use aead::{Aead, NewAead};
 use argon2::{self, Config, ThreadMode, Variant, Version};
 use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
+use keyring::Entry;
 use rand::rngs::OsRng;
 use rand::Rng;
 use std::collections::VecDeque;
@@ -125,19 +125,16 @@ fn extract_salt_nonce(ciphertext: &[u8]) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     (Vec::from(salt_vec), Vec::from(nonce_vec), cipher_vec)
 }
 
-pub fn hash_secret_encoded(secret: &str) -> Result<String, argon2::Error> {
-    // Generate salt - 32-bytes
-    let mut salt = [0u8; SALT_LEN];
-    OsRng.fill(&mut salt);
-    // Generate hash from secret, salt, and argon2 config
-    let hash = argon2::hash_encoded(secret.as_bytes(), &salt, &ARGON_CONF)?;
-    // Ship it
-    Ok(hash)
+pub fn keyring_get_secret(job_name: &str) -> Result<String, Box<dyn Error>> {
+    let entry = Entry::new("com.ciehanski.kip", job_name);
+    let password = entry.get_password()?;
+    Ok(password)
 }
 
-pub fn verify_argon_secret(secret: &str, hash: &str) -> Result<bool, argon2::Error> {
-    let matches = argon2::verify_encoded(hash, secret.as_bytes())?;
-    Ok(matches)
+pub fn keyring_set_secret(job_name: &str, password: &str) -> Result<(), Box<dyn Error>> {
+    let entry = Entry::new("com.ciehanski.kip", job_name);
+    entry.set_password(password)?;
+    Ok(())
 }
 
 #[cfg(test)]

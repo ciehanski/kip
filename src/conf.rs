@@ -2,6 +2,7 @@
 // Copyright (c) 2022 Ryan Ciehanski <ryan@ciehanski.com>
 //
 
+use crate::crypto::keyring_get_secret;
 use crate::job::Job;
 use chrono::prelude::*;
 use directories::ProjectDirs;
@@ -89,7 +90,7 @@ impl KipConf {
                 let dur_since_run_start = Utc::now().signed_duration_since(run.started);
                 // If the duration since the last run started is more than
                 // the configured backup interval, start an upload run
-                let secret = j.secret.clone();
+                let secret = keyring_get_secret(&format!("com.ciehanski.kip.{}", &j.name))?;
                 if dur_since_run_start.num_minutes() >= self.backup_interval as i64 {
                     j.run_upload(&secret).await?;
                 }

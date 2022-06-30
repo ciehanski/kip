@@ -8,7 +8,7 @@ use dialoguer::Confirm;
 use dialoguer::Password;
 use kip::args::{Opt, Subcommands};
 use kip::conf::KipConf;
-use kip::crypto::{hash_secret_encoded, verify_argon_secret};
+use kip::crypto::{keyring_get_secret, keyring_set_secret};
 use kip::job::{Job, KipFile};
 use pretty_bytes::converter::convert;
 use prettytable::{Cell, Row, Table};
@@ -51,10 +51,17 @@ async fn main() {
                 .with_prompt("Please provide your encryption secret")
                 .interact()
                 .expect("[ERR] failed to create encryption secret prompt.");
-            // Encrypt provided secret
-            let encrypted_secret = hash_secret_encoded(&secret).unwrap_or_else(|e| {
-                terminate!(5, "{} failed to encrypt secret: {}.", "[ERR]".red(), e);
-            });
+            // Store secret onto local OS keyring
+            keyring_set_secret(&format!("com.ciehanski.kip.{}", &job), &secret).unwrap_or_else(
+                |e| {
+                    terminate!(
+                        5,
+                        "{} failed to push secret onto keyring: {}.",
+                        "[ERR]".red(),
+                        e
+                    );
+                },
+            );
             // Get S3 access key from user input
             print!("Please provide the S3 access key: ");
             std::io::stdout()
@@ -64,6 +71,16 @@ async fn main() {
             std::io::stdin()
                 .read_line(&mut s3_acc_key)
                 .expect("[ERR] failed to read S3 access key from stdin.");
+            // Store S3 access key onto local OS keyring
+            keyring_set_secret(&format!("com.ciehanski.kip.{}.s3acc", &job), &s3_acc_key)
+                .unwrap_or_else(|e| {
+                    terminate!(
+                        5,
+                        "{} failed to push S3 access key onto keyring: {}.",
+                        "[ERR]".red(),
+                        e
+                    );
+                });
             // Get S3 secret key from user input
             print!("Please provide the S3 secret key: ");
             std::io::stdout()
@@ -73,6 +90,16 @@ async fn main() {
             std::io::stdin()
                 .read_line(&mut s3_sec_key)
                 .expect("[ERR] failed to read S3 secret key from stdin.");
+            // Store S3 secret key onto local OS keyring
+            keyring_set_secret(&format!("com.ciehanski.kip.{}.s3sec", &job), &s3_sec_key)
+                .unwrap_or_else(|e| {
+                    terminate!(
+                        5,
+                        "{} failed to push S3 secret key onto keyring: {}.",
+                        "[ERR]".red(),
+                        e
+                    );
+                });
             // Get S3 bucket name from user input
             print!("Please provide the S3 bucket name: ");
             std::io::stdout()
@@ -92,14 +119,7 @@ async fn main() {
                 .read_line(&mut s3_region)
                 .expect("[ERR] failed to read from stdin.");
             // Create the new job
-            let new_job = Job::new(
-                &job,
-                &encrypted_secret,
-                s3_acc_key.trim_end(),
-                s3_sec_key.trim_end(),
-                s3_bucket_name.trim_end(),
-                s3_region.trim_end(),
-            );
+            let new_job = Job::new(&job, s3_bucket_name.trim_end(), s3_region.trim_end());
             // Push new job in config
             cfg.jobs.insert(job.clone(), new_job);
             // // Store new job in config
@@ -148,7 +168,7 @@ async fn main() {
                 }
             }
             // Confirm correct secret from user input
-            confirm_secret(&j.secret);
+            confirm_secret(&j.name);
             // Push new files to job
             for f in file_path {
                 j.files.push(KipFile::new(
@@ -184,14 +204,18 @@ async fn main() {
         }
 
         // Remove files from a job
-        Subcommands::Remove { job, file_path } => {
+        Subcommands::Remove {
+            job,
+            file_path,
+            purge,
+        } => {
             let mut cfg = cfg.write().await;
             // Get job from argument provided
             let j = cfg.jobs.get_mut(&job).unwrap_or_else(|| {
                 terminate!(2, "{} job '{}' doesn't exist.", "[ERR]".red(), &job);
             });
             // Confirm correct secret from user input
-            confirm_secret(&j.secret);
+            confirm_secret(&j.name);
             // Confirm removal
             if !Confirm::new()
                 .with_prompt("Are you sure you want to remove this?")
@@ -235,15 +259,17 @@ async fn main() {
                             });
                             // Find all the runs that contain this file's chunks
                             // and remove them from S3.
-                            j.remove_file(&f).await.unwrap_or_else(|e| {
-                                terminate!(
-                                    21,
-                                    "{} failed to remove files from S3 for {}: {}.",
-                                    "[ERR]".red(),
-                                    &job,
-                                    e
-                                );
-                            })
+                            if purge.unwrap() {
+                                j.purge_file(&f).await.unwrap_or_else(|e| {
+                                    terminate!(
+                                        21,
+                                        "{} failed to remove files from S3 for {}: {}.",
+                                        "[ERR]".red(),
+                                        &job,
+                                        e
+                                    );
+                                })
+                            }
                         } else {
                             terminate!(
                                 2,
@@ -272,7 +298,12 @@ async fn main() {
                             &job
                         ),
                         Err(e) => {
-                            eprintln!("{} failed to save kip configuration: {}", "[ERR]".red(), e)
+                            terminate!(
+                                7,
+                                "{} failed to save kip configuration: {}",
+                                "[ERR]".red(),
+                                e
+                            );
                         }
                     }
                 }
@@ -285,7 +316,12 @@ async fn main() {
                             println!("{} job '{}' successfully removed.", "[OK]".green(), &job)
                         }
                         Err(e) => {
-                            eprintln!("{} failed to save kip configuration: {}", "[ERR]".red(), e)
+                            terminate!(
+                                7,
+                                "{} failed to save kip configuration: {}",
+                                "[ERR]".red(),
+                                e
+                            );
                         }
                     }
                 }
@@ -310,11 +346,12 @@ async fn main() {
                 );
             });
             // Confirm correct secret from user input
-            let secret = confirm_secret(&j.secret).unwrap_or_default();
+            let secret = confirm_secret(&j.name);
             // Upload all files in a seperate thread
             match j.run_upload(&secret).await {
                 Ok(_) => {}
-                Err(e) => eprintln!(
+                Err(e) => terminate!(
+                    8,
                     "{} job '{}' upload to '{}' failed: {}",
                     "[ERR]".red(),
                     &job,
@@ -345,14 +382,14 @@ async fn main() {
                 terminate!(2, "{} job '{}' doesn't exist.", "[ERR]".red(), &job);
             });
             // Confirm correct secret from user input
-            let secret = confirm_secret(&j.secret).unwrap_or_default();
+            let secret = confirm_secret(&j.name);
             // Only one restore can be happening at a time
             match j.run_restore(run, &secret, output_folder).await {
                 Ok(_) => {
                     println!("{} job '{}' restored successfully.", "[OK]".green(), &job,);
                 }
                 Err(e) => {
-                    eprintln!("{} job '{}' restore failed: {}", "[ERR]".red(), &job, e);
+                    terminate!(2, "{} job '{}' restore failed: {}", "[ERR]".red(), &job, e);
                 }
             };
             // Save changes to config file
@@ -389,18 +426,33 @@ async fn main() {
         }
 
         // Get the status of a job
-        Subcommands::Status { job } => {
+        Subcommands::Status { job, run } => {
             let cfg = cfg.read().await;
             // Get job from argument provided
             let j = cfg.jobs.get(&job).unwrap_or_else(|| {
                 terminate!(2, "{} job '{}' doesn't exist.", "[ERR]".red(), &job);
             });
-            // Print status
-            println!("{}", j.last_status);
+            if let Some(r) = run {
+                // Get run from job
+                let r = j.runs.get(&run.unwrap()).unwrap_or_else(|| {
+                    terminate!(
+                        2,
+                        "{} run '{}' doesn't exist for job '{}.'",
+                        "[ERR]".red(),
+                        &r,
+                        &job.clone(),
+                    );
+                });
+                // print run status
+                println!("{}", r.status)
+            } else {
+                // print job status
+                println!("{}", j.last_status);
+            };
         }
 
         // List all jobs
-        // This function is messing. Should probably cleanup.
+        // This function is messy. Should probably cleanup.
         Subcommands::List { job, run } => {
             let cfg = cfg.read().await;
             // Create the table
@@ -577,23 +629,27 @@ async fn main() {
 }
 
 // Confirm correct secret from user input
-fn confirm_secret(job_secret: &str) -> Option<String> {
+fn confirm_secret(job_name: &str) -> String {
     let secret = Password::new()
         .with_prompt("Please provide your encryption secret")
         .interact()
         .expect("[ERR] failed to create encryption secret prompt.");
-    let term = |e: argon2::Error| {
-        terminate!(
-            5,
-            "{} failed to compare job secret with provided secret: {}.",
-            "[ERR]".red(),
-            e
-        );
-    };
-    if !verify_argon_secret(&secret, job_secret).unwrap_or_else(term) {
+    let keyring_secret =
+        match keyring_get_secret(format!("com.ciehanski.kip.{}", job_name).trim_end()) {
+            Ok(ks) => ks,
+            Err(e) => {
+                terminate!(
+                    5,
+                    "{} failed to get secret from keyring: {}.",
+                    "[ERR]".red(),
+                    e
+                );
+            }
+        };
+    if secret != keyring_secret {
         terminate!(1, "{} incorrect secret.", "[ERR]".red());
     };
-    Some(secret)
+    secret
 }
 
 // A simple macro to remove some boilerplate

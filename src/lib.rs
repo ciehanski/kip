@@ -3,7 +3,8 @@
 //
 
 #![warn(clippy::all)]
-#![forbid(unsafe_code)]
+// Removed for memmap
+// #![forbid(unsafe_code)]
 
 pub mod args;
 pub mod chunk;

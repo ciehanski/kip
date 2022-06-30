@@ -1,6 +1,6 @@
 [package]
 name = "kip"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Ryan Ciehanski <ryan@ciehanski.com>"]
 edition = "2021"
 
@@ -27,6 +27,8 @@ rust-argon2 = "1.0.0"
 directories = "4.0"
 humantime = "2.0"
 zeroize = "1.4.3"
+keyring = "1"
+memmap2 = "0.5.4"
 
 [dev-dependencies]
 criterion = "0.3"

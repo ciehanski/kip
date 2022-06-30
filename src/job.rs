@@ -2,6 +2,7 @@
 // Copyright (c) 2022 Ryan Ciehanski <ryan@ciehanski.com>
 //
 
+use crate::crypto::keyring_get_secret;
 use crate::run::Run;
 use crate::s3::delete_s3_object;
 use chrono::prelude::*;
@@ -12,21 +13,17 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
 use std::error::Error;
-use std::fmt::Display;
+use std::fmt::{Debug, Display};
 use std::fs::metadata;
 use std::io::ErrorKind;
 use std::path::PathBuf;
 use uuid::Uuid;
 use walkdir::WalkDir;
-use zeroize::Zeroize;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Job {
     pub id: Uuid,
     pub name: String,
-    pub secret: String,
-    pub s3_access_key: String,
-    pub s3_secret_key: String,
     pub aws_bucket: String,
     pub aws_region: Region,
     pub files: Vec<KipFile>,
@@ -42,27 +39,14 @@ pub struct Job {
 impl Drop for Job {
     fn drop(&mut self) {
         zeroize_s3_env_vars();
-        self.s3_access_key.zeroize();
-        self.s3_secret_key.zeroize();
-        self.secret.zeroize();
     }
 }
 
 impl Job {
-    pub fn new(
-        name: &str,
-        secret: &str,
-        s3_acc_key: &str,
-        s3_sec_key: &str,
-        aws_bucket: &str,
-        aws_region: &str,
-    ) -> Self {
+    pub fn new(name: &str, aws_bucket: &str, aws_region: &str) -> Self {
         Job {
             id: Uuid::new_v4(),
             name: name.to_string(),
-            secret: secret.to_string(),
-            s3_access_key: s3_acc_key.to_string(),
-            s3_secret_key: s3_sec_key.to_string(),
             aws_bucket: aws_bucket.to_string(),
             aws_region: Job::parse_s3_region(aws_region),
             files: Vec::new(),
@@ -102,16 +86,12 @@ impl Job {
     }
 
     pub async fn run_upload(&mut self, secret: &str) -> Result<(), Box<dyn Error>> {
-        // Set AWS env vars for backup
-        set_s3_env_vars(
-            &self.s3_access_key,
-            &self.s3_secret_key,
-            self.aws_region.name(),
-        );
         // Create new run
         let mut r = Run::new(self.total_runs + 1);
         // Set job metadata
         self.last_status = KipStatus::IN_PROGRESS;
+        // Set AWS env vars for backup
+        self.set_s3_env_vars();
         // Tell the run to start uploading
         match r.upload(self, secret).await {
             Ok(_) => {}
@@ -168,14 +148,10 @@ impl Job {
         secret: &str,
         output_folder: Option<String>,
     ) -> Result<(), Box<dyn Error>> {
-        // Set AWS env vars for backup
-        set_s3_env_vars(
-            &self.s3_access_key,
-            &self.s3_secret_key,
-            self.aws_region.name(),
-        );
         // Get run from job
         if let Some(r) = self.runs.get(&run) {
+            // Set AWS env vars for backup
+            self.set_s3_env_vars();
             // Tell the run to start uploading
             match r.restore(self, secret, output_folder).await {
                 Ok(_) => (),
@@ -189,8 +165,6 @@ impl Job {
                 }
             };
         } else {
-            // Reset AWS env to nil
-            zeroize_s3_env_vars();
             return Err(Box::new(std::io::Error::new(
                 ErrorKind::InvalidData,
                 format!("couldn't find run {}.", run),
@@ -202,7 +176,7 @@ impl Job {
         Ok(())
     }
 
-    pub async fn remove_file(&mut self, f: &str) -> Result<(), Box<dyn Error>> {
+    pub async fn purge_file(&mut self, f: &str) -> Result<(), Box<dyn Error>> {
         // Find all the runs that contain this file's chunks
         // and remove them from S3.
         for run in self.runs.iter() {
@@ -219,11 +193,7 @@ impl Job {
                     cpath.push_str(&format!("/{}.chunk", chunk.hash));
                     path.push_str(&cpath);
                     // Set AWS env vars for backup
-                    set_s3_env_vars(
-                        &self.s3_access_key,
-                        &self.s3_secret_key,
-                        self.aws_region.name(),
-                    );
+                    self.set_s3_env_vars();
                     // Delete
                     delete_s3_object(&self.aws_bucket, self.aws_region.clone(), &path).await?;
                     // Reset AWS env env to nil
@@ -280,13 +250,19 @@ impl Job {
         }
         Ok(())
     }
-}
 
-fn set_s3_env_vars(acc: &str, sec: &str, reg: &str) {
-    // Set AWS env vars to user's keys
-    env::set_var("AWS_ACCESS_KEY_ID", acc);
-    env::set_var("AWS_SECRET_ACCESS_KEY", sec);
-    env::set_var("AWS_REGION", reg);
+    fn set_s3_env_vars(&self) {
+        let s3acc = keyring_get_secret(&format!("com.ciehanski.kip.{}.s3acc", self.name))
+            .expect("couldnt get s3acc from keyring");
+        let s3acc = s3acc.trim_end();
+        let s3sec = keyring_get_secret(&format!("com.ciehanski.kip.{}.s3sec", self.name))
+            .expect("couldn't get s3sec from keyring");
+        let s3sec = s3sec.trim_end();
+        // Set AWS env vars to user's keys
+        env::set_var("AWS_ACCESS_KEY_ID", s3acc);
+        env::set_var("AWS_SECRET_ACCESS_KEY", s3sec);
+        env::set_var("AWS_REGION", self.aws_region.name());
+    }
 }
 
 fn zeroize_s3_env_vars() {
@@ -339,7 +315,7 @@ mod tests {
 
     #[test]
     fn test_get_files_amt() {
-        let mut j = Job::new("test1", "hunter2", "", "", "testing1", "us-east-1");
+        let mut j = Job::new("test1", "testing1", "us-east-1");
         j.files.push(KipFile::new(PathBuf::from("test/vandy.jpg")));
         j.files.push(KipFile::new(PathBuf::from("test/vandy.jpg")));
         j.files.push(KipFile::new(PathBuf::from("test/vandy.jpg")));
@@ -350,7 +326,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_file_hashes() {
-        let mut j = Job::new("test1", "hunter2", "", "", "testing1", "us-east-1");
+        let mut j = Job::new("test1", "testing1", "us-east-1");
         j.files.push(KipFile::new(PathBuf::from("test/vandy.jpg")));
         j.files.push(KipFile::new(PathBuf::from("test/random.txt")));
         let hash_result = j.get_file_hashes().await;
