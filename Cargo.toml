@@ -10,7 +10,7 @@ edition = "2021"
 chrono = { version = "0.4", features = ["serde"] }
 walkdir = "2"
 dialoguer = "0.10"
-clap = { version = "3.2.7", features = ["derive"] }
+clap = { version = "3.2.8", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 uuid = { version = "1.1", features = ["serde", "v4"] }
