@@ -1,4 +1,4 @@
-name: Build 
+name: CI
 on: [push, pull_request]
 
 jobs:
@@ -22,7 +22,7 @@ jobs:
       - name: Cache rust artifacts
         uses: Swatinem/rust-cache@v1
 
-      - name: Run cargo check
+      - name: Build kip
         uses: actions-rs/cargo@v1
         with:
           command: build 
