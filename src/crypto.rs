@@ -1,14 +1,15 @@
 //
 // Copyright (c) 2022 Ryan Ciehanski <ryan@ciehanski.com>
 //
+
 use aead::{Aead, NewAead};
+use anyhow::{bail, Context, Result};
 use argon2::{self, Config, ThreadMode, Variant, Version};
 use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
 use keyring::Entry;
 use rand::rngs::OsRng;
 use rand::Rng;
 use std::collections::VecDeque;
-use std::error::Error;
 use zeroize::Zeroize;
 
 const ARGON_CONF: Config = Config {
@@ -25,7 +26,7 @@ const ARGON_CONF: Config = Config {
 const SALT_LEN: usize = 32;
 const NONCE_LEN: usize = 24;
 
-pub fn encrypt(plaintext: &[u8], secret: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+pub fn encrypt(plaintext: &[u8], secret: &str) -> Result<Vec<u8>> {
     // Generate salt - 32-bytes
     let mut salt = [0u8; SALT_LEN];
     OsRng.fill(&mut salt);
@@ -42,10 +43,7 @@ pub fn encrypt(plaintext: &[u8], secret: &str) -> Result<Vec<u8>, Box<dyn Error>
     let mut ciphertext = match aead.encrypt(nonce, plaintext) {
         Ok(hs) => hs,
         Err(e) => {
-            return Err(Box::new(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("unable to decrypt ciphertext: {}.", e),
-            )))
+            bail!("unable to decrypt ciphertext: {}.", e)
         }
     };
     // CIPHERTEXT [?-bytes] | SALT [32-bytes] | NONCE [24-bytes]
@@ -63,9 +61,9 @@ pub fn encrypt(plaintext: &[u8], secret: &str) -> Result<Vec<u8>, Box<dyn Error>
     Ok(ciphertext)
 }
 
-pub fn decrypt(ciphertext: &[u8], secret: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+pub fn decrypt(ciphertext: &[u8], secret: &str) -> Result<Vec<u8>> {
     // Pop off salt & nonce from ciphertext for decryption
-    let (mut salt_vec, mut nonce_vec, cipher_vec) = extract_salt_nonce(ciphertext);
+    let (mut salt_vec, mut nonce_vec, cipher_vec) = extract_salt_nonce(ciphertext)?;
     // argon2 32-byte secret
     let mut hashed_secret = argon2::hash_raw(secret.as_bytes(), &salt_vec, &ARGON_CONF)?;
     let key = Key::from_slice(&hashed_secret);
@@ -77,10 +75,7 @@ pub fn decrypt(ciphertext: &[u8], secret: &str) -> Result<Vec<u8>, Box<dyn Error
     let plaintext = match aead.decrypt(nonce, cipher_vec.as_ref()) {
         Ok(hs) => hs,
         Err(e) => {
-            return Err(Box::new(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("unable to decrypt ciphertext: {}.", e),
-            )))
+            bail!("unable to decrypt ciphertext: {}.", e)
         }
     };
     // Zeroize arguments
@@ -94,7 +89,7 @@ pub fn decrypt(ciphertext: &[u8], secret: &str) -> Result<Vec<u8>, Box<dyn Error
 }
 
 // Extracts the nonce from the end of the ciphertext
-fn extract_salt_nonce(ciphertext: &[u8]) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+fn extract_salt_nonce(ciphertext: &[u8]) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
     // Pop off nonce from ciphertext for decryption
     let mut cipher_vec = ciphertext.to_vec();
     let mut nonce_vec = VecDeque::with_capacity(NONCE_LEN);
@@ -106,7 +101,7 @@ fn extract_salt_nonce(ciphertext: &[u8]) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
         // We always expect pop to produce Some
         let nonce_byte = cipher_vec
             .pop()
-            .expect("error popping nonce from ciphertext");
+            .context("error popping nonce from ciphertext")?;
         // Push front since pop works in reverse
         // on the back of the Vec
         nonce_vec.push_front(nonce_byte);
@@ -116,24 +111,30 @@ fn extract_salt_nonce(ciphertext: &[u8]) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
         // We always expect pop to produce Some
         let salt_byte = cipher_vec
             .pop()
-            .expect("error popping salt from ciphertext");
+            .context("error popping salt from ciphertext")?;
         // Push front since pop works in reverse
         // on the back of the Vec
         salt_vec.push_front(salt_byte);
     }
     // Ship it
-    (Vec::from(salt_vec), Vec::from(nonce_vec), cipher_vec)
+    Ok((Vec::from(salt_vec), Vec::from(nonce_vec), cipher_vec))
 }
 
-pub fn keyring_get_secret(job_name: &str) -> Result<String, Box<dyn Error>> {
+pub fn keyring_get_secret(job_name: &str) -> Result<String> {
     let entry = Entry::new("com.ciehanski.kip", job_name);
     let password = entry.get_password()?;
     Ok(password)
 }
 
-pub fn keyring_set_secret(job_name: &str, password: &str) -> Result<(), Box<dyn Error>> {
+pub fn keyring_set_secret(job_name: &str, password: &str) -> Result<()> {
     let entry = Entry::new("com.ciehanski.kip", job_name);
     entry.set_password(password)?;
+    Ok(())
+}
+
+pub fn keyring_delete_secret(job_name: &str) -> Result<()> {
+    let entry = Entry::new("com.ciehanski.kip", job_name);
+    entry.delete_password()?;
     Ok(())
 }
 
@@ -197,7 +198,9 @@ mod tests {
     #[test]
     fn test_extract_salt_nonce() {
         let encrypted = b"secret00000000000000000000000000000000111111111111111111111111";
-        let (salt, nonce, cipher) = extract_salt_nonce(encrypted);
+        let extract_result = extract_salt_nonce(encrypted);
+        assert!(extract_result.is_ok());
+        let (salt, nonce, cipher) = extract_salt_nonce(encrypted).unwrap();
         assert_eq!(salt.len(), SALT_LEN);
         assert_eq!(salt, b"00000000000000000000000000000000");
         assert_eq!(nonce.len(), NONCE_LEN);

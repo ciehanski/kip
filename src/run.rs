@@ -4,20 +4,23 @@
 
 use crate::chunk::{chunk_file, FileChunk};
 use crate::job::{Job, KipFile, KipStatus};
-use crate::s3::{check_bucket, list_s3_bucket, s3_download, s3_upload};
+use crate::providers::s3::{check_bucket, download, list_all, upload};
+use anyhow::{bail, Result};
+use async_compression::tokio::write::{ZstdDecoder, ZstdEncoder};
 use chrono::prelude::*;
 use colored::*;
 use crypto_hash::{hex_digest, Algorithm};
+use futures::stream::FuturesUnordered;
 use humantime::format_duration;
+use linya::{Bar, Progress};
 use memmap2::MmapOptions;
 use serde::{Deserialize, Serialize};
-use std::error::Error;
 use std::fs::{create_dir_all, metadata, File, Metadata, OpenOptions};
 use std::io::prelude::*;
-use std::io::Error as IOErr;
-use std::io::ErrorKind;
 use std::io::SeekFrom;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
+use tokio::io::AsyncWriteExt;
 use walkdir::WalkDir;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -46,47 +49,76 @@ impl Run {
         }
     }
 
-    pub async fn upload(&mut self, job: &Job, secret: &str) -> Result<(), Box<dyn Error>> {
+    pub async fn upload(&mut self, job: Job, secret: String) -> Result<()> {
+        // Create progress bar context
+        let progress = Arc::new(Mutex::new(Progress::new()));
+        let start_log = format!(
+            "[{}] {}-{} ⇉ upload started.",
+            Utc::now().format("%Y-%m-%d %H:%M:%S"),
+            job.name,
+            self.id,
+        );
+        self.logs.push(start_log.clone());
+        println!("{}", start_log);
         // Set run metadata
         self.started = Utc::now();
         self.status = KipStatus::IN_PROGRESS;
-        let (mut warn, mut err): (usize, usize) = (0, 0);
-        let mut bytes_uploaded: u64 = 0;
-        // TODO: create futures for each file iteration
-        // and join at the end of this function to let
-        // for concurrent uploads
-        for f in job.files.iter() {
+        let started = self.started;
+        let mut warn: usize = 0;
+        let bytes_uploaded: Arc<Mutex<u64>> = Arc::new(Mutex::new(0));
+        let err = Arc::new(Mutex::new(Vec::<String>::new()));
+        let upload_logs = Arc::new(Mutex::new(Vec::<String>::new()));
+        let changed_file_chunks = Arc::new(Mutex::new(Vec::<FileChunk>::new()));
+        // Create futures for each file iteration and join
+        // at the end of this function to let for concurrent uploads
+        let upload_futures = FuturesUnordered::new();
+        for kf in job.files.clone().into_iter() {
             // Check if file or directory exists
-            if !f.path.exists() {
+            if !kf.path.exists() {
                 warn += 1;
                 let log = format!(
                     "[{}] {}-{} ⇉ '{}' can not be found.",
                     Utc::now().format("%Y-%m-%d %H:%M:%S"),
                     job.name,
                     self.id,
-                    f.path.display().to_string().red(),
+                    kf.path.display().to_string().red(),
                 );
                 self.logs.push(log.clone());
                 println!("{}", log);
                 continue;
             }
             // Check if f is file or directory
-            let fmd = metadata(&f.path)?;
+            let fmd = metadata(&kf.path)?;
             if fmd.is_file() {
-                match self.upload_inner(f, fmd.clone(), job, secret).await {
-                    Ok(bu) => {
-                        bytes_uploaded += bu;
-                    }
-                    Err(_) => {
-                        err += 1;
-                        continue;
-                    }
-                };
+                let progress = Arc::clone(&progress);
+                let bytes_uploaded_arc = Arc::clone(&bytes_uploaded);
+                let upload_logs_arc = Arc::clone(&upload_logs);
+                let changed_file_chunks_arc = Arc::clone(&changed_file_chunks);
+                let err_arc = Arc::clone(&err);
+                let job = job.clone();
+                let secret = secret.clone();
+                let mut run = self.clone();
+                let kf = kf.clone();
+                let upload_file_future = tokio::task::spawn(async move {
+                    match run.upload_inner(&kf, &fmd, job, &secret, progress).await {
+                        Ok((logs, mut fc, bu)) => {
+                            upload_logs_arc.lock().unwrap().push(logs);
+                            changed_file_chunks_arc.lock().unwrap().append(&mut fc);
+                            *bytes_uploaded_arc.lock().unwrap() += bu;
+                        }
+                        Err(e) => {
+                            err_arc.lock().unwrap().push(e.to_string());
+                        }
+                    };
+                });
+                // Add file upload future join handler to vec
+                // to be run at the same time later in this function
+                upload_futures.push(upload_file_future);
             } else if fmd.is_dir() {
                 // If the listed file entry is a dir, use walkdir to
                 // walk all the recursive directories as well. Upload
                 // all files found within the directory.
-                for entry in WalkDir::new(&f.path) {
+                for entry in WalkDir::new(&kf.path) {
                     let entry = entry?;
                     // If a directory, skip since upload will
                     // create the parent folder by default
@@ -94,44 +126,81 @@ impl Run {
                     if fmd.is_dir() {
                         continue;
                     }
-                    match self.upload_inner(f, fmd.clone(), job, secret).await {
-                        Ok(bu) => {
-                            bytes_uploaded += bu;
-                        }
-                        Err(_) => {
-                            err += 1;
-                            continue;
-                        }
-                    };
+                    let progress = Arc::clone(&progress);
+                    let bytes_uploaded_arc = Arc::clone(&bytes_uploaded);
+                    let upload_logs_arc = Arc::clone(&upload_logs);
+                    let changed_file_chunks_arc = Arc::clone(&changed_file_chunks);
+                    let err_arc = Arc::clone(&err);
+                    let job = job.clone();
+                    let secret = secret.clone();
+                    let mut run = self.clone();
+                    let kf = kf.clone();
+                    let upload_dir_file_future = tokio::task::spawn(async move {
+                        match run.upload_inner(&kf, &fmd, job, &secret, progress).await {
+                            Ok((logs, mut fc, bu)) => {
+                                upload_logs_arc.lock().unwrap().push(logs);
+                                changed_file_chunks_arc.lock().unwrap().append(&mut fc);
+                                *bytes_uploaded_arc.lock().unwrap() += bu;
+                            }
+                            Err(e) => {
+                                err_arc.lock().unwrap().push(e.to_string());
+                            }
+                        };
+                    });
+                    // Add file upload future join handler to vec
+                    // to be run at the same time later in this function
+                    upload_futures.push(upload_dir_file_future);
                 }
             }
         }
+        // Join (run) all file upload futures and wait for them
+        // all to finish here
+        futures::future::join_all(upload_futures).await;
         // Set run metadata
         self.finished = Utc::now();
-        let dur = self.finished.signed_duration_since(self.started).to_std()?;
+        let dur = self.finished.signed_duration_since(started).to_std()?;
         self.time_elapsed = format_duration(dur).to_string();
-        self.bytes_uploaded = bytes_uploaded;
-        if err == 0 && warn == 0 {
+        self.bytes_uploaded = *bytes_uploaded.lock().unwrap();
+        self.logs.extend_from_slice(&*upload_logs.lock().unwrap());
+        self.files_changed
+            .append(&mut *changed_file_chunks.lock().unwrap());
+        let err = err.lock().unwrap();
+        if err.len() == 0 && warn == 0 {
             self.status = KipStatus::OK;
-        } else if warn > 0 && err == 0 {
+        } else if warn > 0 && err.len() == 0 {
             self.status = KipStatus::WARN;
         } else {
             self.status = KipStatus::ERR;
+            for e in &*err {
+                eprintln!("{}", e);
+            }
         }
+        let fin_log = format!(
+            "[{}] {}-{} ⇉ upload completed.",
+            Utc::now().format("%Y-%m-%d %H:%M:%S"),
+            job.name,
+            self.id,
+        );
+        self.logs.push(fin_log.clone());
+        println!("{}", fin_log);
         Ok(())
     }
 
     async fn upload_inner(
         &mut self,
         f: &KipFile,
-        fmd: Metadata,
-        job: &Job,
+        fmd: &Metadata,
+        job: Job,
         secret: &str,
-    ) -> Result<u64, Box<dyn Error>> {
+        progress: Arc<Mutex<Progress>>,
+    ) -> Result<(String, Vec<FileChunk>, u64)> {
+        let mut file_upload_log = String::new();
+        let mut files_changed = vec![];
         // Before opening file, determine how large it is
         // If larger than 500 MB, mmap the sucker, if not, just read it
         let mut file = vec![];
         if fmd.len() > (500 * 1024 * 1024) {
+            // SAFETY: unsafe used here for mmap
             let mmap = unsafe { MmapOptions::new().populate().map(&File::open(&f.path)?)? };
             file.extend_from_slice(&mmap[..]);
         } else {
@@ -141,6 +210,16 @@ impl Run {
         // Check if all file chunks are already in S3
         // to avoid overwite and needless upload
         let chunks_map = chunk_file(&file);
+        let bar: Bar = progress.lock().unwrap().bar(
+            fmd.len() as usize,
+            format!(
+                "[{}] {}-{} ⇉ uploading '{}'",
+                Utc::now().format("%Y-%m-%d %H:%M:%S"),
+                job.name,
+                self.id,
+                f.path.display().to_string().green(),
+            ),
+        );
         let hash_ok = f.hash == digest;
         let mut chunks_missing: usize = 0;
         let mut bytes_uploaded: u64 = 0;
@@ -161,30 +240,33 @@ impl Run {
                 self.id,
                 f.path.display().to_string().yellow(),
             );
-            self.logs.push(log.clone());
+            file_upload_log = log.clone();
             println!("{}", log);
         } else {
+            // Arc clone progress bar
+            let progress = Arc::clone(&progress);
             // Upload
-            match s3_upload(
+            match upload(
                 &f.path.canonicalize()?,
                 chunks_map,
-                fmd.len(),
                 job.id,
                 job.aws_bucket.clone(),
                 job.aws_region.clone(),
                 secret,
+                progress,
+                &bar,
             )
             .await
             {
-                Ok(chunked_file) => {
+                Ok((chunked_file, bu)) => {
                     // Confirm the chunked file is not empty AKA
                     // this chunk has not been modified, skip it
                     if !chunked_file.is_empty() {
                         // Increase bytes uploaded for this run
-                        bytes_uploaded += fmd.len();
+                        bytes_uploaded += bu as u64;
                         // Push chunks onto run's changed files
                         for c in chunked_file {
-                            self.files_changed.push(c);
+                            files_changed.push(c);
                         }
                         // Push logs
                         let log = format!(
@@ -195,8 +277,8 @@ impl Run {
                             f.path.display().to_string().green(),
                             job.aws_bucket.clone(),
                         );
-                        self.logs.push(log.clone());
-                        println!("{}", log);
+                        file_upload_log = log;
+                        // println!("{}", log);
                     }
                 }
                 Err(e) => {
@@ -209,32 +291,32 @@ impl Run {
                         f.path.display().to_string().red(),
                         e,
                     );
-                    self.logs.push(log.clone());
+                    file_upload_log = log.clone();
                     println!("{}", log);
                 }
             };
         }
-        Ok(bytes_uploaded)
+        progress.lock().unwrap().is_done(&bar);
+        Ok((file_upload_log, files_changed, bytes_uploaded))
     }
 
-    pub async fn restore(
-        &self,
-        job: &Job,
-        secret: &str,
-        output_folder: Option<String>,
-    ) -> Result<(), Box<dyn Error>> {
-        // Get output folder
-        let output_folder = output_folder.unwrap_or_default();
+    pub async fn restore(&self, job: &Job, secret: &str, output_folder: &str) -> Result<()> {
+        println!(
+            "[{}] {}-{} ⇉ restore started.",
+            Utc::now().format("%Y-%m-%d %H:%M:%S"),
+            job.name,
+            self.id,
+        );
+        // Confirm files_changed is not nil
+        if self.files_changed.is_empty() {
+            bail!("nothing to restore, no files were changed on this run.")
+        }
         let dmd = metadata(&output_folder)?;
         if !dmd.is_dir() || output_folder.is_empty() {
-            return Err(Box::new(IOErr::new(
-                ErrorKind::InvalidData,
-                "path provided is not a directory.",
-            )));
+            bail!("path provided is not a directory.")
         }
         // Get all bucket contents
-        let bucket_objects =
-            list_s3_bucket(&job.aws_bucket, job.aws_region.clone(), job.id).await?;
+        let bucket_objects = list_all(&job.aws_bucket, job.aws_region.clone(), job.id).await?;
         // For each object in the bucket, download it
         let mut counter: usize = 0;
         'files: for fc in self.files_changed.iter() {
@@ -246,10 +328,7 @@ impl Run {
                 let s3_key = match &ob.key {
                     Some(k) => k,
                     _ => {
-                        return Err(Box::new(IOErr::new(
-                            ErrorKind::NotFound,
-                            "unable to get bucket object's S3 path.",
-                        )))
+                        bail!("unable to get bucket object's S3 path.")
                     }
                 };
                 // Strip the hash from S3 key
@@ -262,15 +341,14 @@ impl Run {
                     // this chunk
                     let local_path = fc.local_path.display().to_string().green();
                     // Download chunk
-                    match s3_download(s3_key, &job.aws_bucket, job.aws_region.clone(), secret).await
-                    {
+                    match download(s3_key, &job.aws_bucket, job.aws_region.clone(), secret).await {
                         Ok(chunk_bytes) => {
                             // Determine if single or multi-chunk file
                             if self.is_single_chunk(fc) {
                                 // Increment file resote counter
                                 counter += 1;
                                 // If a single-chunk file, simply decrypt and write
-                                let mut cfile = create_file(&fc.local_path, &output_folder)?;
+                                let mut cfile = create_file(&fc.local_path, output_folder)?;
                                 cfile.write_all(&chunk_bytes)?;
                                 println!(
                                     "[{}] {}-{} ⇉ '{}' restored successfully. ({}/{})",
@@ -279,7 +357,7 @@ impl Run {
                                     self.id,
                                     local_path,
                                     counter,
-                                    self.files_changed.len(),
+                                    job.files_amt,
                                 );
                                 continue 'files;
                             } else {
@@ -298,7 +376,7 @@ impl Run {
                                 local_path,
                                 e,
                                 counter,
-                                self.files_changed.len(),
+                                job.files_amt,
                             );
                         }
                     }
@@ -306,23 +384,20 @@ impl Run {
             }
             // Only run if multi_chunks is not empty
             if !multi_chunks.is_empty() {
-                // All chunks found for file, autobots, assemble!
-                // Increment file resote counter
-                counter += 1;
-                // Get local path for logs
-                let local_path = &multi_chunks[0].0.local_path.clone();
                 // Here, we sort all the chunks by thier offset and
                 // combine the chunks and write the file
-                assemble_chunks(multi_chunks, local_path, &output_folder)?;
+                assemble_chunks(&multi_chunks, &fc.local_path, output_folder)?;
+                // Increment file resote counter
+                counter += 1;
                 // Print logs
                 println!(
                     "[{}] {}-{} ⇉ '{}' restored successfully. ({}/{})",
                     Utc::now().format("%Y-%m-%d %H:%M:%S"),
                     job.name,
                     self.id,
-                    local_path.display().to_string().green(),
+                    &fc.local_path.display().to_string().green(),
                     counter,
-                    self.files_changed.len(),
+                    job.files_amt,
                 );
             }
         }
@@ -345,30 +420,38 @@ impl Run {
     }
 }
 
-// Find all chunks associated with the same path
-// and combine them in order according to their offsets and
-// lengths and then save to the original local path
+/// Find all chunks associated with the same path
+/// and combine them in order according to their offsets and
+/// lengths and then save to the original local path
 fn assemble_chunks(
-    mut chunks: Vec<(&FileChunk, Vec<u8>)>,
+    chunks: &Vec<(&FileChunk, Vec<u8>)>,
     local_path: &Path,
     output_folder: &str,
-) -> Result<(), Box<dyn Error>> {
-    // Create file
+) -> Result<()> {
+    // Creates or opens file
     let mut cfile = create_file(local_path, output_folder)?;
-    // Order the chunks by offset
-    chunks.sort_by(|a, b| a.0.offset.cmp(&b.0.offset));
     // Write the file
     for (chunk, chunk_bytes) in chunks {
+        // Seeks to the offset where this chunked data
+        // segment begins and write it to completion
         cfile.seek(SeekFrom::Start(chunk.offset as u64))?;
-        cfile.write_all(&chunk_bytes)?;
+        cfile.write_all(chunk_bytes)?;
     }
+    // Maybe compare fmd of cfile to known size of
+    // orginally uploaded file?
+    // Then return bool if file is complete or not
+    // Then the function can count and print only when
+    // the result is true and the file restore is complete
+    // if cfile.metadata().unwrap().len() == complete_len {
+    //     return Ok(true)
+    // }
     Ok(())
 }
 
-fn create_file(path: &Path, output_folder: &str) -> Result<File, Box<dyn Error>> {
+fn create_file(path: &Path, output_folder: &str) -> Result<File> {
     // Only strip prefix if path has a prefix
     let mut correct_chunk_path = path;
-    if path.starts_with("/") {
+    if !cfg!(windows) && path.starts_with("/") {
         correct_chunk_path = path.strip_prefix("/")?;
     }
     let folder_path = Path::new(&output_folder).join(correct_chunk_path);
@@ -388,16 +471,13 @@ fn create_file(path: &Path, output_folder: &str) -> Result<File, Box<dyn Error>>
     Ok(cfile)
 }
 
-pub fn strip_hash_from_s3(s3_path: &str) -> Result<String, IOErr> {
+pub fn strip_hash_from_s3(s3_path: &str) -> Result<String> {
     // Pop hash off from S3 path
     let mut fp: Vec<_> = s3_path.split('/').collect();
     let hdt = match fp.pop() {
         Some(h) => h,
         _ => {
-            return Err(IOErr::new(
-                ErrorKind::UnexpectedEof,
-                "failed to pop chunk's S3 path.",
-            ))
+            bail!("failed to pop chunk's S3 path.")
         }
     };
     // Split the chunk. Ex: 902938470293847392033874592038473.chunk
@@ -406,6 +486,20 @@ pub fn strip_hash_from_s3(s3_path: &str) -> Result<String, IOErr> {
     let hash = hs[0].to_string();
     // Ship it
     Ok(hash)
+}
+
+pub async fn compress(bytes: &[u8]) -> Result<Vec<u8>> {
+    let mut encoder = ZstdEncoder::new(vec![]);
+    encoder.write_all(bytes).await?;
+    encoder.shutdown().await?;
+    Ok(encoder.into_inner())
+}
+
+pub async fn decompress(bytes: &[u8]) -> Result<Vec<u8>> {
+    let mut decoder = ZstdDecoder::new(vec![]);
+    decoder.write_all(bytes).await?;
+    decoder.shutdown().await?;
+    Ok(decoder.into_inner())
 }
 
 #[cfg(test)]
@@ -489,7 +583,7 @@ mod tests {
         // IRL, chunks will not be in order
         multi_chunks.shuffle(&mut thread_rng());
         // Time to assemble
-        let result = assemble_chunks(multi_chunks, &PathBuf::from("kip"), dir);
+        let result = assemble_chunks(&multi_chunks, &PathBuf::from("kip"), dir);
         assert!(result.is_ok());
         // Compare restored file with original
         let test_result = read(tmp_dir.path().join("kip"));
@@ -536,6 +630,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(target_os = "windows", ignore)]
     fn test_create_file_no_prefix() {
         // Create temp dir for testing
         let tmp_dir = tempdir();

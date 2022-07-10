@@ -19,13 +19,10 @@ backup options available, but this seemed like more fun for me.
 
 ## TODO
 
-- Fix assembling multi-chunk files on restore
-- Create sync_channel for 10 concurrent file uploads during `run.upload()`
-- Implement SQLite or similar file DB for jobs storage
 - Implement exclusions list
-- Add Google Drive as a provider
-- Add Dropbox as a provider
+- Add USB as a provider
 - Add local path/network path as a provider
+- Add Google Drive as a provider
 
 ## Usage
 
@@ -59,6 +56,13 @@ $ kip remove <job> -f <files>
 $ kip rm profile_backup -f ".bashrc" "Desktop/"
 ```
 
+#### Remove a file from a backup job and purge it from all previous backups:
+
+```bash
+$ kip remove <job> -f <files> -p
+$ kip rm documents_backup -f ".bashrc" -p
+```
+
 #### Start a manual backup run:
 
 ```bash
@@ -73,11 +77,25 @@ $ kip pull <job> -r <run>
 $ kip pull documents_backup -r 1
 ```
 
+#### Pause a job:
+
+```bash
+$ kip pause <job>
+$ kip pause documents_backup
+```
+
+#### Resume a job:
+
+```bash
+$ kip resume <job>
+$ kip resume profile_backup
+```
+
 #### List backup jobs with their metadata:
 
 ```bash
-$ kip list <job> -r <run>
-$ kip ls
+$ kip status <job> -r <run>
+$ kip status
 $ kip ls documents_backup
 $ kip ls documents_backup -r 1
 ```

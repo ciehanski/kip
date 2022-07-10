@@ -4,49 +4,53 @@
 
 use crate::chunk::FileChunk;
 use crate::crypto::{decrypt, encrypt};
+use anyhow::{bail, Result};
+use linya::{Bar, Progress};
 use rusoto_core::Region;
 use rusoto_s3::{
     DeleteObjectRequest, GetObjectRequest, ListObjectsV2Request, PutObjectRequest, S3Client,
     StreamingBody, S3,
 };
 use std::collections::HashMap;
-use std::error::Error;
-use std::io::Error as IOErr;
-use std::io::ErrorKind;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use tokio::io::AsyncReadExt;
 use uuid::Uuid;
 
-pub async fn s3_upload(
+pub async fn upload(
     f: &Path,
     chunks_map: HashMap<FileChunk, &[u8]>,
-    fmd_len: u64,
     job_id: Uuid,
     aws_bucket: String,
     aws_region: Region,
     secret: &str,
-) -> Result<Vec<FileChunk>, Box<dyn Error>> {
+    progress: Arc<Mutex<Progress>>,
+    bar: &Bar,
+) -> Result<(Vec<FileChunk>, usize)> {
     // Create S3 client
     let s3_client = S3Client::new(aws_region.clone());
     // Upload each chunk
     let mut chunks = vec![];
+    let mut bytes_uploaded = 0;
     for (mut chunk, chunk_bytes) in chunks_map {
+        // Always compress before encryption
+        let compressed = crate::run::compress(chunk_bytes).await?;
         // Encrypt chunk
-        let encrypted = match encrypt(chunk_bytes, secret) {
+        let encrypted = match encrypt(&compressed, secret) {
             Ok(ec) => ec,
             Err(e) => {
-                return Err(Box::new(IOErr::new(
-                    ErrorKind::InvalidData,
-                    format!("failed to encrypt chunk: {}.", e),
-                )));
+                bail!("failed to encrypt chunk: {}.", e)
             }
         };
+        // Get amount of bytes uploaded in this chunk
+        // after compression and encryption
+        let ce_bytes_len = encrypted.len();
         // Upload
         s3_client
             .put_object(PutObjectRequest {
                 bucket: aws_bucket.clone(),
                 key: format!("{}/chunks/{}.chunk", job_id, chunk.hash),
-                content_length: Some(fmd_len as i64),
+                content_length: Some(encrypted.len() as i64),
                 body: Some(StreamingBody::from(encrypted)),
                 ..Default::default()
             })
@@ -54,16 +58,23 @@ pub async fn s3_upload(
         // Push chunk onto chunks hashmap for return
         chunk.local_path = f.canonicalize()?;
         chunks.push(chunk);
+        // Increment progress bar for this file by one
+        // since one chunk was uploaded
+        progress
+            .lock()
+            .unwrap()
+            .inc_and_draw(bar, chunk_bytes.len());
+        bytes_uploaded += ce_bytes_len;
     }
-    Ok(chunks)
+    Ok((chunks, bytes_uploaded))
 }
 
-pub async fn s3_download(
+pub async fn download(
     f: &str,
     aws_bucket: &str,
     aws_region: Region,
     secret: &str,
-) -> Result<Vec<u8>, Box<dyn Error>> {
+) -> Result<Vec<u8>> {
     let s3_client = S3Client::new(aws_region);
     let result = s3_client
         .get_object(GetObjectRequest {
@@ -76,10 +87,7 @@ pub async fn s3_download(
     let mut result_stream = match result.body {
         Some(b) => b.into_async_read(),
         _ => {
-            return Err(Box::new(IOErr::new(
-                ErrorKind::InvalidData,
-                String::from("unable to read response from S3."),
-            )));
+            bail!("unable to read response from S3.")
         }
     };
     // Read the downloaded S3 bytes into result_bytes
@@ -89,21 +97,16 @@ pub async fn s3_download(
     let decrypted = match decrypt(&result_bytes, secret) {
         Ok(dc) => dc,
         Err(e) => {
-            return Err(Box::new(IOErr::new(
-                ErrorKind::InvalidData,
-                format!("failed to decrypt file: {}.", e),
-            )));
+            bail!("failed to decrypt file: {}.", e)
         }
     };
+    // Decompress decrypted bytes
+    let decompressed = crate::run::decompress(&decrypted).await?;
     // Return downloaded & decrypted bytes
-    Ok(decrypted)
+    Ok(decompressed)
 }
 
-pub async fn delete_s3_object(
-    aws_bucket: &str,
-    aws_region: Region,
-    file_name: &str,
-) -> Result<(), Box<dyn Error>> {
+pub async fn delete(aws_bucket: &str, aws_region: Region, file_name: &str) -> Result<()> {
     let s3_client = S3Client::new(aws_region);
     s3_client
         .delete_object(DeleteObjectRequest {
@@ -115,11 +118,11 @@ pub async fn delete_s3_object(
     Ok(())
 }
 
-pub async fn list_s3_bucket(
+pub async fn list_all(
     aws_bucket: &str,
     aws_region: Region,
     job_id: Uuid,
-) -> Result<Vec<rusoto_s3::Object>, Box<dyn Error>> {
+) -> Result<Vec<rusoto_s3::Object>> {
     let s3_client = S3Client::new(aws_region);
     let result = s3_client
         .list_objects_v2(ListObjectsV2Request {
@@ -149,17 +152,11 @@ pub async fn list_s3_bucket(
                 };
             } else {
                 // error splitting obj key returned from S3
-                return Err(Box::new(IOErr::new(
-                    ErrorKind::InvalidInput,
-                    String::from("error splitting chunk name from S3."),
-                )));
+                bail!("error splitting chunk name from S3.")
             };
         } else {
             // error, no obj key returned from S3
-            return Err(Box::new(IOErr::new(
-                ErrorKind::InvalidInput,
-                String::from("unable to get chunk name from S3."),
-            )));
+            bail!("unable to get chunk name from S3.")
         }
     }
     Ok(corrected_contents)
@@ -170,9 +167,9 @@ pub async fn check_bucket(
     aws_region: Region,
     job_id: Uuid,
     query: &str,
-) -> Result<bool, Box<dyn Error>> {
+) -> Result<bool> {
     // Check S3 for duplicates of chunk
-    let s3_objs = list_s3_bucket(aws_bucket, aws_region.clone(), job_id).await?;
+    let s3_objs = list_all(aws_bucket, aws_region.clone(), job_id).await?;
     // If the S3 bucket is empty, no need to check for duplicate chunks
     if !s3_objs.is_empty() {
         for obj in s3_objs {
@@ -183,10 +180,7 @@ pub async fn check_bucket(
                     return Ok(true);
                 }
             } else {
-                return Err(Box::new(IOErr::new(
-                    ErrorKind::InvalidInput,
-                    String::from("unable to get chunk name from S3."),
-                )));
+                bail!("unable to get chunk name from S3.")
             }
         }
     }
