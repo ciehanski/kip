@@ -139,6 +139,7 @@ mod tests {
         assert.success();
     }
 
+    #[ignore]
     #[test]
     fn test_add() {
         let mut cmd = Command::cargo_bin("kip").unwrap();
