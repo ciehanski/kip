@@ -366,6 +366,7 @@ mod tests {
         assert_eq!(region3, Region::UsEast2)
     }
 
+    #[ignore]
     #[test]
     fn test_set_get_keyring() {
         let j = Job::new("test1", "testing1", "us-east-1");
