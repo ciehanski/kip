@@ -48,7 +48,7 @@ jobs:
         uses: Swatinem/rust-cache@v1
 
       - name: Install kip into cargo bin
-        uses: actions-rs/cargo@1
+        uses: actions-rs/cargo@v1
         with:
           command: install --path .
 
