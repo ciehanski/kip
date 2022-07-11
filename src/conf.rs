@@ -17,22 +17,23 @@ use tokio::sync::RwLock;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct KipConf {
-    // Uses TOML
+    /// Uses TOML
     pub settings: KipConfOpts,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct KipConfOpts {
-    // How often you would like kip to run automatic
-    // backup jobs
+    /// How often you would like kip to run automatic
+    /// backup jobs
     pub backup_interval: u64,
-    // By default, kip will only dedupe within
-    // a job's remote folder, not the whole provider's repository
+    /// By default, kip will only dedupe within
+    /// a job's remote folder, not the whole provider's repository
     pub dedupe_repo: bool,
-    // Specifiy how many threads you want kip to run on
+    /// Specifiy how many threads you want kip to run on
     pub worker_threads: usize,
-    // Specifiy if you would like kip to store secrets in the
-    // default OS keyring or a BYOK custom keyring service
+    /// Specifiy if you would like kip to store secrets in the
+    /// default OS keyring or a BYOK custom keyring service
+    /// default: true
     pub os_keyring: bool,
     pub bandwidth_limit: usize,
     pub email_notification: bool,
@@ -40,10 +41,10 @@ pub struct KipConfOpts {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct KipConfMetadata {
-    // This is where we store all the jobs' and runs'
-    // metadata. This is seperate from the conf file because
-    // it can get quite messy and hard to read.
-    // Uses JSON
+    /// This is where we store all the jobs' and runs'
+    /// metadata. This is seperate from the conf file because
+    /// it can get quite messy and hard to read.
+    /// Uses JSON
     pub jobs: HashMap<String, Job>,
 }
 
@@ -63,10 +64,12 @@ impl KipConf {
             },
         }
     }
+
+    /// KipConf directory:
+    /// Linux:   /home/alice/.config/kip
+    /// Windows: C:\Users\Alice\AppData\Roaming\ciehanski\kip
+    /// macOS:   /Users/Alice/Library/Application Support/com.ciehanski.kip
     pub fn new() -> Result<(KipConfArc, KipConfMetadataArc)> {
-        // Linux:   /home/alice/.config/kip
-        // Windows: C:\Users\Alice\AppData\Roaming\ciehanski\kip
-        // macOS:   /Users/Alice/Library/Application Support/com.ciehanski.kip
         if let Some(proj_dirs) = ProjectDirs::from("com", "ciehanski", "kip") {
             if proj_dirs.config_dir().join("kip.toml").exists() {
                 // If kip configuration already exists, read and return it
@@ -111,13 +114,14 @@ impl KipConfMetadata {
             jobs: HashMap::<String, Job>::new(),
         }
     }
+
     pub fn save(&mut self) -> Result<()> {
         if let Some(proj_dirs) = ProjectDirs::from("com", "ciehanski", "kip") {
             let mut file = OpenOptions::new()
                 .write(true)
                 .open(proj_dirs.config_dir().join("kip_metadata.json"))?;
             let json_conf = serde_json::to_string_pretty(&self)?;
-            // Overwrite the conf file
+            // Overwrite the metadata file
             file.set_len(0)?;
             file.write_all(json_conf.as_bytes())?;
             Ok(())
@@ -126,7 +130,7 @@ impl KipConfMetadata {
         }
     }
 
-    /// Requires "Allows Allow" access to your keyring entries for kip
+    /// Requires "Always Allow" access to your keyring entries for kip
     pub async fn poll_backup_jobs(&mut self, kc: &KipConf) -> Result<()> {
         if !self.jobs.is_empty() {
             for (_, j) in self.jobs.iter_mut() {

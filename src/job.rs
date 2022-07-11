@@ -3,8 +3,8 @@
 //
 
 use crate::crypto::{keyring_delete_secret, keyring_get_secret};
-use crate::providers::s3::delete;
-// use crate::providers::{KipProviders, KipS3};
+use crate::providers::s3::KipS3;
+use crate::providers::{KipProvider, KipProviders};
 use crate::run::Run;
 use anyhow::{bail, Context, Result};
 use chrono::prelude::*;
@@ -24,12 +24,12 @@ use walkdir::WalkDir;
 pub struct Job {
     pub id: Uuid,
     pub name: String,
-    // pub provider: KipProviders,
+    pub provider: KipProviders,
     pub compress: bool,
     // pub retain_all: bool,
     // pub retention_policy: Frotate,
-    pub aws_bucket: String,
-    pub aws_region: Region,
+    // pub aws_bucket: String,
+    // pub aws_region: Region,
     pub files: Vec<KipFile>,
     pub files_amt: usize,
     // pub excluded_files: Vec<String>,
@@ -49,10 +49,10 @@ impl Job {
         Job {
             id: Uuid::new_v4(),
             name: name.to_string(),
-            // provider: KipProviders::KipS3(KipS3::new(aws_bucket, aws_region)),
+            provider: KipProviders::S3(KipS3::new(aws_bucket, Job::parse_s3_region(aws_region))),
             compress: false,
-            aws_bucket: aws_bucket.to_string(),
-            aws_region: Job::parse_s3_region(aws_region),
+            // aws_bucket: aws_bucket.to_string(),
+            // aws_region: Job::parse_s3_region(aws_region),
             files: Vec::new(),
             files_amt: 0,
             runs: HashMap::new(),
@@ -144,10 +144,10 @@ impl Job {
                 self.first_run = Utc::now();
             }
             println!(
-                "{} job '{}' completed successfully to '{}'.",
+                "{} job '{}' completed uploading to '{}' successfully .",
                 "[OK]".green(),
                 &self.name,
-                &self.aws_bucket,
+                &self.provider.s3().unwrap().aws_bucket,
             );
         } else {
             println!("{} no file changes detected.", "[INFO]".yellow());
@@ -189,7 +189,7 @@ impl Job {
                 if chunk.local_path == fpath {
                     let chunk_path = format!("{}/chunks/{}.chunk", self.id, chunk.hash);
                     // Delete
-                    delete(&self.aws_bucket, self.aws_region.clone(), &chunk_path).await?;
+                    self.provider.s3().unwrap().delete(&chunk_path).await?;
                 }
             }
         }
@@ -257,7 +257,7 @@ impl Job {
         // Set AWS env vars to user's keys
         env::set_var("AWS_ACCESS_KEY_ID", s3acc);
         env::set_var("AWS_SECRET_ACCESS_KEY", s3sec);
-        env::set_var("AWS_REGION", self.aws_region.name());
+        env::set_var("AWS_REGION", self.provider.s3().unwrap().aws_region.name());
         Ok(())
     }
 

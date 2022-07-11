@@ -6,10 +6,32 @@ pub mod s3;
 // pub mod usb;
 
 use crate::chunk::FileChunk;
+use crate::providers::s3::KipS3;
+use anyhow::Result;
+use async_trait::async_trait;
+use linya::{Bar, Progress};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::error::Error;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
+use uuid::Uuid;
+
+#[async_trait]
+pub trait KipProvider {
+    async fn upload(
+        &self,
+        source: &Path,
+        chunks: HashMap<FileChunk, &[u8]>,
+        job_id: Uuid,
+        secret: &str,
+        progress: Arc<Mutex<Progress>>,
+        bar: &Bar,
+    ) -> Result<(Vec<FileChunk>, usize)>;
+    async fn download(&self, source: &str, secret: &str) -> Result<Vec<u8>>;
+    async fn delete(&self, remote_path: &str) -> Result<()>;
+    async fn contains(&self, job: Uuid, obj_name: &str) -> Result<bool>;
+    async fn list_all(&self, job: Uuid) -> Result<Vec<rusoto_s3::Object>>;
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum KipProviders {
@@ -26,12 +48,12 @@ impl KipProviders {
         matches!(self, KipProviders::Usb(_))
     }
 
-    // pub fn s3(&self) -> Option<KipS3> {
-    //     match self {
-    //         KipProviders::S3(s3) => Some(*s3),
-    //         _ => None,
-    //     }
-    // }
+    pub fn s3(&self) -> Option<&KipS3> {
+        match self {
+            KipProviders::S3(s3) => Some(s3),
+            _ => None,
+        }
+    }
 
     pub fn usb(&self) -> Option<KipUsb> {
         match self {
@@ -45,33 +67,4 @@ impl KipProviders {
 pub struct KipUsb {
     pub vendor_id: u16,
     pub product_id: u16,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct KipS3 {
-    pub aws_bucket: String,
-    pub aws_region: String,
-}
-
-impl KipS3 {
-    pub fn new<S: Into<String>>(aws_bucket: S, aws_region: S) -> Self {
-        KipS3 {
-            aws_bucket: aws_bucket.into(),
-            aws_region: aws_region.into(),
-        }
-    }
-}
-
-pub trait KipProvider {
-    fn upload<S: Into<String>>(
-        source: &Path,
-        dest: S,
-        chunks: HashMap<FileChunk, &[u8]>,
-        total_bytes: u64,
-        secret: S,
-    ) -> Result<Vec<FileChunk>, Box<dyn Error>>;
-    fn download(source: &str, dest: &Path, secret: &str) -> Result<Vec<u8>, Box<dyn Error>>;
-    fn delete(remote_path: &str) -> Result<(), Box<dyn Error>>;
-    fn list_all() -> Result<(), Box<dyn Error>>;
-    fn contains(remote_path: &str, obj_name: &str) -> Result<bool, Box<dyn Error>>;
 }

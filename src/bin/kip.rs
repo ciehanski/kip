@@ -371,7 +371,7 @@ fn main() {
                         "{} job '{}' upload to '{}' failed: {}",
                         "[ERR]".red(),
                         &job,
-                        &j.aws_bucket,
+                        &j.provider.s3().unwrap().aws_bucket,
                         e
                     ),
                 }
@@ -468,7 +468,7 @@ fn main() {
                         "{} job '{}' upload to '{}' failed: {}",
                         "[ERR]".red(),
                         &job,
-                        &j.aws_bucket,
+                        &j.provider.s3().unwrap().aws_bucket,
                         e
                     ),
                 }
@@ -537,8 +537,8 @@ fn main() {
                         table.add_row(Row::new(vec![
                             Cell::new(&format!("{}", &j.name.to_string().green())),
                             Cell::new(&format!("{}", j.id)),
-                            Cell::new(&j.aws_bucket.to_string()),
-                            Cell::new(j.aws_region.name()),
+                            Cell::new(&j.provider.s3().unwrap().aws_bucket),
+                            Cell::new(j.provider.s3().unwrap().aws_region.name()),
                             Cell::new(&format!("{}", j.files_amt)),
                             Cell::new(&format!("{}", j.total_runs)),
                             Cell::new(&correct_last_run),
@@ -595,8 +595,8 @@ fn main() {
                     table.add_row(Row::new(vec![
                         Cell::new(&format!("{}", &j.name.to_string().green())),
                         Cell::new(&format!("{}", j.id)),
-                        Cell::new(&j.aws_bucket.to_string()),
-                        Cell::new(j.aws_region.name()),
+                        Cell::new(&j.provider.s3().unwrap().aws_bucket),
+                        Cell::new(j.provider.s3().unwrap().aws_region.name()),
                         Cell::new(&correct_files),
                         Cell::new(&format!("{}", j.total_runs)),
                         Cell::new(&correct_last_run),
@@ -635,8 +635,8 @@ fn main() {
                     // Add row with run info
                     table.add_row(Row::new(vec![
                         Cell::new(&format!("{}", &format!("{}-{}", j.name, r.id).green())),
-                        Cell::new(&j.aws_bucket.to_string()),
-                        Cell::new(j.aws_region.name()),
+                        Cell::new(&j.provider.s3().unwrap().aws_bucket),
+                        Cell::new(j.provider.s3().unwrap().aws_region.name()),
                         Cell::new(&format!("{}", r.files_changed.len())),
                         Cell::new(&convert(r.bytes_uploaded as f64)),
                         Cell::new(&r.time_elapsed.to_string()),

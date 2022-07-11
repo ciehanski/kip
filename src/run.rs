@@ -4,7 +4,7 @@
 
 use crate::chunk::{chunk_file, FileChunk};
 use crate::job::{Job, KipFile, KipStatus};
-use crate::providers::s3::{check_bucket, download, list_all, upload};
+use crate::providers::KipProvider;
 use anyhow::{bail, Result};
 use async_compression::tokio::write::{ZstdDecoder, ZstdEncoder};
 use chrono::prelude::*;
@@ -224,8 +224,12 @@ impl Run {
         let mut chunks_missing: usize = 0;
         let mut bytes_uploaded: u64 = 0;
         for (chunk, _) in chunks_map.iter() {
-            let chunk_in_s3 =
-                check_bucket(&job.aws_bucket, job.aws_region.clone(), job.id, &chunk.hash).await?;
+            let chunk_in_s3 = job
+                .provider
+                .s3()
+                .unwrap()
+                .contains(job.id, &chunk.hash)
+                .await?;
             if !chunk_in_s3 {
                 chunks_missing += 1;
             };
@@ -246,17 +250,19 @@ impl Run {
             // Arc clone progress bar
             let progress = Arc::clone(&progress);
             // Upload
-            match upload(
-                &f.path.canonicalize()?,
-                chunks_map,
-                job.id,
-                job.aws_bucket.clone(),
-                job.aws_region.clone(),
-                secret,
-                progress,
-                &bar,
-            )
-            .await
+            match job
+                .provider
+                .s3()
+                .unwrap()
+                .upload(
+                    &f.path.canonicalize()?,
+                    chunks_map,
+                    job.id,
+                    secret,
+                    progress,
+                    &bar,
+                )
+                .await
             {
                 Ok((chunked_file, bu)) => {
                     // Confirm the chunked file is not empty AKA
@@ -269,16 +275,14 @@ impl Run {
                             files_changed.push(c);
                         }
                         // Push logs
-                        let log = format!(
+                        file_upload_log = format!(
                             "[{}] {}-{} ⇉ '{}' uploaded successfully to '{}'.",
                             Utc::now().format("%Y-%m-%d %H:%M:%S"),
                             job.name,
                             self.id,
                             f.path.display().to_string().green(),
-                            job.aws_bucket.clone(),
+                            job.provider.s3().unwrap().aws_bucket,
                         );
-                        file_upload_log = log;
-                        // println!("{}", log);
                     }
                 }
                 Err(e) => {
@@ -316,7 +320,7 @@ impl Run {
             bail!("path provided is not a directory.")
         }
         // Get all bucket contents
-        let bucket_objects = list_all(&job.aws_bucket, job.aws_region.clone(), job.id).await?;
+        let bucket_objects = job.provider.s3().unwrap().list_all(job.id).await?;
         // For each object in the bucket, download it
         let mut counter: usize = 0;
         'files: for fc in self.files_changed.iter() {
@@ -341,7 +345,7 @@ impl Run {
                     // this chunk
                     let local_path = fc.local_path.display().to_string().green();
                     // Download chunk
-                    match download(s3_key, &job.aws_bucket, job.aws_region.clone(), secret).await {
+                    match job.provider.s3().unwrap().download(s3_key, secret).await {
                         Ok(chunk_bytes) => {
                             // Determine if single or multi-chunk file
                             if self.is_single_chunk(fc) {
