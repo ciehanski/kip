@@ -47,10 +47,10 @@ jobs:
       - name: Cache rust artifacts
         uses: Swatinem/rust-cache@v1
 
-      - name: Install kip into cargo bin
+      - name: Build binary for test 
         uses: actions-rs/cargo@v1
         with:
-          command: install --path .
+          command: build
 
       - name: Run cargo test
         uses: actions-rs/cargo@v1
