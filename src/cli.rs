@@ -33,7 +33,13 @@ pub enum Subcommands {
         #[clap(value_parser)]
         job: String,
         /// The paths of all files to add to job
-        #[clap(required = true, short = 'f', long = "files", value_parser)]
+        #[clap(
+            required = true,
+            short = 'f',
+            long = "files",
+            min_values = 0,
+            value_parser
+        )]
         file_path: Vec<String>,
     },
 
@@ -47,7 +53,7 @@ pub enum Subcommands {
         #[clap(short = 'r', long = "run", value_parser)]
         run: Option<usize>,
         /// The paths of all files to remove from job
-        #[clap(short = 'f', long = "files", value_parser)]
+        #[clap(short = 'f', long = "files", min_values = 0, value_parser)]
         file_path: Option<Vec<String>>,
         /// Purge file from all previous remote backups
         #[clap(short = 'p', long = "purge", action)]
