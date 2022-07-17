@@ -18,7 +18,7 @@ uuid = { version = "1.1", features = ["serde", "v4"] }
 directories = "4.0"
 rusoto_core = "0.48"
 rusoto_s3 = "0.48"
-tokio = { version = "1.19", features = ["io-util", "fs", "sync"] }
+tokio = { version = "1.20", features = ["io-util", "fs", "sync"] }
 async-trait = "0.1.56"
 # tokio-serial = "5.4"
 fastcdc = "1.0.6"
