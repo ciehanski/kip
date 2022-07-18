@@ -35,6 +35,8 @@ pub struct KipConfOpts {
     /// default OS keyring or a BYOK custom keyring service
     /// default: true
     pub os_keyring: bool,
+    pub skip_hidden_files: bool,
+    pub follow_symlinks: bool,
     pub bandwidth_limit: usize,
     pub email_notification: bool,
 }
@@ -59,6 +61,8 @@ impl KipConf {
                 dedupe_repo: false,
                 worker_threads: num_cpus::get(),
                 os_keyring: true,
+                skip_hidden_files: false,
+                follow_symlinks: true,
                 bandwidth_limit: 0,
                 email_notification: false,
             },

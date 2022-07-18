@@ -2,15 +2,17 @@
 // Copyright (c) 2022 Ryan Ciehanski <ryan@ciehanski.com>
 //
 
+use aws_sdk_s3::Region;
 use chrono::prelude::*;
 use clap::Parser;
 use colored::*;
-use dialoguer::Confirm;
-use dialoguer::Password;
+use dialoguer::{theme::ColorfulTheme, Confirm, Password, Select};
 use kip::cli::{Cli, Subcommands};
 use kip::conf::KipConf;
 use kip::crypto::{keyring_get_secret, keyring_set_secret};
 use kip::job::{Job, KipFile};
+use kip::providers::{s3::KipS3, usb::KipUsb, KipProviders};
+use kip::terminate;
 use pretty_bytes::converter::convert;
 use prettytable::{Cell, Row, Table};
 use std::io::prelude::*;
@@ -45,11 +47,6 @@ fn main() {
     let args = Cli::parse();
     let _debug = args.debug;
 
-    // kip::providers::usb::list_devices().unwrap_or_else(|e| {
-    //     terminate!(99, "{} failed to get USB devices: {}.", "[ERR]".red(), e);
-    // });
-    // kip::providers::usb::usb_entry();
-
     runtime.block_on(async {
         // Match user input command
         match args.subcommands {
@@ -79,66 +76,98 @@ fn main() {
                         );
                     },
                 );
-                // Get S3 access key from user input
-                print!("Please provide the S3 access key: ");
-                std::io::stdout()
-                    .flush()
-                    .expect("[ERR] failed to flush stdout.");
-                let mut s3_acc_key = String::new();
-                std::io::stdin()
-                    .read_line(&mut s3_acc_key)
-                    .expect("[ERR] failed to read S3 access key from stdin.");
-                // Store S3 access key onto local OS keyring
-                keyring_set_secret(&format!("com.ciehanski.kip.{}.s3acc", &job), &s3_acc_key)
-                    .unwrap_or_else(|e| {
-                        terminate!(
-                            5,
-                            "{} failed to push S3 access key onto keyring: {}.",
-                            "[ERR]".red(),
-                            e
-                        );
-                    });
-                // Get S3 secret key from user input
-                print!("Please provide the S3 secret key: ");
-                std::io::stdout()
-                    .flush()
-                    .expect("[ERR] failed to flush stdout.");
-                let mut s3_sec_key = String::new();
-                std::io::stdin()
-                    .read_line(&mut s3_sec_key)
-                    .expect("[ERR] failed to read S3 secret key from stdin.");
-                // Store S3 secret key onto local OS keyring
-                keyring_set_secret(&format!("com.ciehanski.kip.{}.s3sec", &job), &s3_sec_key)
-                    .unwrap_or_else(|e| {
-                        terminate!(
-                            5,
-                            "{} failed to push S3 secret key onto keyring: {}.",
-                            "[ERR]".red(),
-                            e
-                        );
-                    });
-                // Get S3 bucket name from user input
-                print!("Please provide the S3 bucket name: ");
-                std::io::stdout()
-                    .flush()
-                    .expect("[ERR] failed to flush stdout.");
-                let mut s3_bucket_name = String::new();
-                std::io::stdin()
-                    .read_line(&mut s3_bucket_name)
-                    .expect("[ERR] failed to read S3 bucket name from stdin.");
-                // Get S3 bucket region from user input
-                print!("Please provide the S3 region: ");
-                std::io::stdout()
-                    .flush()
-                    .expect("[ERR] failed to flush stdout.");
-                let mut s3_region = String::new();
-                std::io::stdin()
-                    .read_line(&mut s3_region)
-                    .expect("[ERR] failed to read from stdin.");
-                // Create the new job
-                let new_job = Job::new(&job, s3_bucket_name.trim_end(), s3_region.trim_end());
-                // Push new job in config
-                md.jobs.insert(job.clone(), new_job);
+                // Confirm if S3 or USB job
+                let provider_selection: usize = Select::with_theme(&ColorfulTheme::default())
+                    .item("S3")
+                    .item("USB")
+                    .default(0)
+                    .interact()
+                    .expect("[ERR] unable to create provider selection menu.");
+                match provider_selection {
+                    0 => {
+                        // Get S3 access key from user input
+                        print!("Please provide the S3 access key: ");
+                        std::io::stdout()
+                            .flush()
+                            .expect("[ERR] failed to flush stdout.");
+                        let mut s3_acc_key = String::new();
+                        std::io::stdin()
+                            .read_line(&mut s3_acc_key)
+                            .expect("[ERR] failed to read S3 access key from stdin.");
+                        // Store S3 access key onto local OS keyring
+                        keyring_set_secret(
+                            &format!("com.ciehanski.kip.{}.s3acc", &job),
+                            &s3_acc_key,
+                        )
+                        .unwrap_or_else(|e| {
+                            terminate!(
+                                5,
+                                "{} failed to push S3 access key onto keyring: {}.",
+                                "[ERR]".red(),
+                                e
+                            );
+                        });
+                        // Get S3 secret key from user input
+                        print!("Please provide the S3 secret key: ");
+                        std::io::stdout()
+                            .flush()
+                            .expect("[ERR] failed to flush stdout.");
+                        let mut s3_sec_key = String::new();
+                        std::io::stdin()
+                            .read_line(&mut s3_sec_key)
+                            .expect("[ERR] failed to read S3 secret key from stdin.");
+                        // Store S3 secret key onto local OS keyring
+                        keyring_set_secret(
+                            &format!("com.ciehanski.kip.{}.s3sec", &job),
+                            &s3_sec_key,
+                        )
+                        .unwrap_or_else(|e| {
+                            terminate!(
+                                5,
+                                "{} failed to push S3 secret key onto keyring: {}.",
+                                "[ERR]".red(),
+                                e
+                            );
+                        });
+                        // Get S3 bucket name from user input
+                        print!("Please provide the S3 bucket name: ");
+                        std::io::stdout()
+                            .flush()
+                            .expect("[ERR] failed to flush stdout.");
+                        let mut s3_bucket_name = String::new();
+                        std::io::stdin()
+                            .read_line(&mut s3_bucket_name)
+                            .expect("[ERR] failed to read S3 bucket name from stdin.");
+                        // Get S3 bucket region from user input
+                        print!("Please provide the S3 region: ");
+                        std::io::stdout()
+                            .flush()
+                            .expect("[ERR] failed to flush stdout.");
+                        let mut s3_region = String::new();
+                        std::io::stdin()
+                            .read_line(&mut s3_region)
+                            .expect("[ERR] failed to read from stdin.");
+                        // Create the new job
+                        let provider = KipProviders::S3(KipS3::new(
+                            s3_bucket_name.trim_end(),
+                            Region::new(s3_region.trim_end().to_owned()),
+                        ));
+                        let new_job = Job::new(&job, provider);
+                        // Push new job in config
+                        md.jobs.insert(job.clone(), new_job);
+                    }
+                    1 => {
+                        // USB
+                        // Create the new job
+                        let provider = KipProviders::Usb(KipUsb::new(""));
+                        let new_job = Job::new(&job, provider);
+                        // Push new job in config
+                        md.jobs.insert(job.clone(), new_job);
+                    }
+                    _ => {
+                        terminate!(69, "Hey! Don't do that!");
+                    }
+                }
                 // // Store new job in config
                 match md.save() {
                     Ok(_) => println!("{} job '{}' successfully created.", "[OK]".green(), job),
@@ -164,16 +193,31 @@ fn main() {
                 let j = md.jobs.get_mut(&job).unwrap_or_else(|| {
                     terminate!(2, "{} job '{}' doesn't exist.", "[ERR]".red(), &job);
                 });
+                // Check if files are excluded by this job
+                for jf in &j.excluded_files {
+                    for f in &file_path {
+                        if jf
+                            == &Path::new(f)
+                                .canonicalize()
+                                .expect("[ERR] unable to canonicalize path.")
+                        {
+                            terminate!(
+                                17,
+                                "{} file(s) are excluded on job '{}'.",
+                                "[ERR]".red(),
+                                &job
+                            );
+                        }
+                    }
+                }
                 // Check if files already exist on job
                 // to avoid duplication.
                 for jf in &j.files {
                     for f in &file_path {
-                        if jf.path.display().to_string()
-                            == PathBuf::from(f)
+                        if jf.path
+                            == Path::new(f)
                                 .canonicalize()
                                 .expect("[ERR] unable to canonicalize path.")
-                                .display()
-                                .to_string()
                         {
                             terminate!(
                                 17,
@@ -223,7 +267,6 @@ fn main() {
             // Remove files from a job
             Subcommands::Remove {
                 job,
-                run,
                 file_path,
                 purge,
             } => {
@@ -292,55 +335,133 @@ fn main() {
                                 e
                             );
                         });
-                        // Save changes to config file
-                        match md.save() {
-                            Ok(_) => println!(
-                                "{} files successfully removed from job '{}'.",
-                                "[OK]".green(),
-                                &job
-                            ),
-                            Err(e) => {
-                                terminate!(
-                                    7,
-                                    "{} failed to save kip configuration: {}",
-                                    "[ERR]".red(),
-                                    e
-                                );
-                            }
-                        }
+                        // Success
+                        println!(
+                            "{} files successfully removed from job '{}'.",
+                            "[OK]".green(),
+                            &job
+                        );
                     }
                     None => {
-                        if let Some(r) = run {
-                            // -r was provided, only delete the run
-                            j.runs.remove(&r);
-                            j.total_runs -= 1;
-                            println!(
-                                "{} run '{}' successfully removed from '{}'.",
-                                "[OK]".green(),
-                                &r,
-                                &job
-                            )
-                        } else {
-                            // Remove job's keyring entries
-                            j.delete_keyring_entries()
-                                // -f and -r were not provided, delete the job
-                                .expect("unable to delete keyring entries for job");
-                            md.jobs.remove(&job);
-                            println!("{} job '{}' successfully removed.", "[OK]".green(), &job)
-                        };
-                        // Save changes to config file
-                        match md.save() {
-                            Ok(_) => {}
-                            Err(e) => {
+                        // Remove job's keyring entries
+                        j.delete_keyring_entries()
+                            // -f and -r were not provided, delete the job
+                            .expect("unable to delete keyring entries for job");
+                        md.jobs.remove(&job);
+                        println!("{} job '{}' successfully removed.", "[OK]".green(), &job)
+                    }
+                }
+                // Save changes to config file
+                match md.save() {
+                    Ok(_) => {}
+                    Err(e) => {
+                        terminate!(
+                            7,
+                            "{} failed to save kip configuration: {}",
+                            "[ERR]".red(),
+                            e
+                        );
+                    }
+                }
+            }
+
+            // Excludes files or directories from a job
+            Subcommands::Exclude {
+                job,
+                file_path,
+                extensions,
+            } => {
+                let mut md = md.write().await;
+                // Get job from argument provided
+                let j = md.jobs.get_mut(&job).unwrap_or_else(|| {
+                    terminate!(2, "{} job '{}' doesn't exist.", "[ERR]".red(), &job);
+                });
+                // Confirm correct secret from user input
+                confirm_secret(&j.name);
+                // Confirm if files or exentions were provided
+                if let Some(fp) = file_path {
+                    // Check if file or directory exists
+                    for f in &fp {
+                        if !Path::new(f).exists() {
+                            terminate!(2, "{} '{}' doesn't exist.", "[ERR]".red(), f);
+                        }
+                    }
+                    // Check if this file is being backed up by the job
+                    // cancel excluding it if so
+                    for jf in &j.files {
+                        for f in &fp {
+                            let f_path = Path::new(f)
+                                .canonicalize()
+                                .expect("[ERR] unable to canonicalize path.");
+                            if jf.path == f_path {
                                 terminate!(
-                                    7,
-                                    "{} failed to save kip configuration: {}",
+                                    17,
+                                    "{} unable to exclude files that are being backed up by '{}'.",
                                     "[ERR]".red(),
-                                    e
+                                    &job
                                 );
                             }
                         }
                     }
+                    // Check if files are already excluded from job
+                    // to avoid duplication.
+                    for jf in &j.excluded_files {
+                        for f in &fp {
+                            let jf_path = Path::new(jf)
+                                .canonicalize()
+                                .expect("[err] unable to canonicalize path.");
+                            let f_path = Path::new(f)
+                                .canonicalize()
+                                .expect("[err] unable to canonicalize path.");
+                            if jf_path == f_path {
+                                terminate!(
+                                    17,
+                                    "{} file(s) already excluded from job '{}'.",
+                                    "[err]".red(),
+                                    &job
+                                );
+                            }
+                        }
+                    }
+                    // Push exclusions to job
+                    for f in fp {
+                        j.excluded_files.push(
+                            PathBuf::from(f)
+                                .canonicalize()
+                                .expect("[ERR] unable to canonicalize path."),
+                        );
+                    }
+                } else if let Some(e) = extensions {
+                    // Check if extensions are already excluded from job
+                    // to avoid duplication.
+                    for jext in &j.excluded_file_types {
+                        for ext in &e {
+                            if jext == ext {
+                                terminate!(
+                                    17,
+                                    "{} file(s) already excluded from job '{}'.",
+                                    "[err]".red(),
+                                    &job
+                                );
+                            }
+                        }
+                    }
+                    // Push excluded extensions to job
+                    for ext in e {
+                        j.excluded_file_types.push(ext);
+                    }
+                } else {
+                    terminate!(99, "no file path or extensions provided");
+                }
+                // Save changes to config file
+                match md.save() {
+                    Ok(_) => println!("{} exclusions added to job '{}'.", "[OK]".green(), &job),
+                    Err(e) => terminate!(
+                        7,
+                        "{} failed to save kip configuration: {}",
+                        "[ERR]".red(),
+                        e
+                    ),
                 }
             }
 
@@ -538,7 +659,7 @@ fn main() {
                             Cell::new(&format!("{}", &j.name.to_string().green())),
                             Cell::new(&format!("{}", j.id)),
                             Cell::new(&j.provider.s3().unwrap().aws_bucket),
-                            Cell::new(j.provider.s3().unwrap().aws_region.name()),
+                            Cell::new(&j.provider.s3().unwrap().aws_region),
                             Cell::new(&format!("{}", j.files_amt)),
                             Cell::new(&format!("{}", j.total_runs)),
                             Cell::new(&correct_last_run),
@@ -556,7 +677,7 @@ fn main() {
                         Cell::new("Selected Files"),
                         Cell::new("Total Runs"),
                         Cell::new("Last Run"),
-                        Cell::new("Bytes in Provider"),
+                        Cell::new("Bytes (Provider)"),
                         Cell::new("Status"),
                     ]));
                     let j = md.jobs.get(&job.clone().unwrap()).unwrap_or_else(|| {
@@ -596,7 +717,7 @@ fn main() {
                         Cell::new(&format!("{}", &j.name.to_string().green())),
                         Cell::new(&format!("{}", j.id)),
                         Cell::new(&j.provider.s3().unwrap().aws_bucket),
-                        Cell::new(j.provider.s3().unwrap().aws_region.name()),
+                        Cell::new(&j.provider.s3().unwrap().aws_region),
                         Cell::new(&correct_files),
                         Cell::new(&format!("{}", j.total_runs)),
                         Cell::new(&correct_last_run),
@@ -636,7 +757,7 @@ fn main() {
                     table.add_row(Row::new(vec![
                         Cell::new(&format!("{}", &format!("{}-{}", j.name, r.id).green())),
                         Cell::new(&j.provider.s3().unwrap().aws_bucket),
-                        Cell::new(j.provider.s3().unwrap().aws_region.name()),
+                        Cell::new(&j.provider.s3().unwrap().aws_region),
                         Cell::new(&format!("{}", r.files_changed.len())),
                         Cell::new(&convert(r.bytes_uploaded as f64)),
                         Cell::new(&r.time_elapsed.to_string()),
@@ -713,14 +834,3 @@ fn confirm_secret(job_name: &str) -> String {
     };
     secret
 }
-
-// A simple macro to remove some boilerplate
-// on error or exiting kip.
-macro_rules! terminate {
-    ($xcode:expr, $($arg:tt)*) => {{
-        let res = std::fmt::format(format_args!($($arg)*));
-        eprintln!("{}", res);
-        std::process::exit($xcode);
-    }}
-}
-pub(crate) use terminate;

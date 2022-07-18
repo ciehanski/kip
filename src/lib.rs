@@ -11,3 +11,14 @@ pub mod crypto;
 pub mod job;
 pub mod providers;
 pub mod run;
+
+// A simple macro to remove some boilerplate
+// on error or exiting kip.
+#[macro_export]
+macro_rules! terminate {
+    ($xcode:expr, $($arg:tt)*) => {{
+        let res = std::fmt::format(format_args!($($arg)*));
+        eprintln!("{}", res);
+        std::process::exit($xcode);
+    }}
+}

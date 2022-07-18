@@ -18,7 +18,8 @@ use serde::{Deserialize, Serialize};
 use std::fs::{create_dir_all, metadata, File, Metadata, OpenOptions};
 use std::io::prelude::*;
 use std::io::SeekFrom;
-use std::path::Path;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tokio::io::AsyncWriteExt;
 use walkdir::WalkDir;
@@ -58,6 +59,7 @@ impl Run {
             job.name,
             self.id,
         );
+        // Print job start
         self.logs.push(start_log.clone());
         println!("{}", start_log);
         // Set run metadata
@@ -73,6 +75,42 @@ impl Run {
         // at the end of this function to let for concurrent uploads
         let upload_futures = FuturesUnordered::new();
         for kf in job.files.clone().into_iter() {
+            // Check if file is excluded
+            if !job.excluded_files.is_empty() {
+                for fe in job.excluded_files.iter() {
+                    if PathBuf::from(fe).canonicalize().unwrap() == kf.path {
+                        warn += 1;
+                        let log = format!(
+                            "[{}] {}-{} ⇉ '{}' is excluded from backups.",
+                            Utc::now().format("%Y-%m-%d %H:%M:%S"),
+                            job.name,
+                            self.id,
+                            kf.path.display().to_string().red(),
+                        );
+                        self.logs.push(log.clone());
+                        println!("{}", log);
+                        continue;
+                    }
+                }
+            }
+            // Check if file type is excluded
+            if !job.excluded_file_types.is_empty() {
+                for fte in job.excluded_file_types.iter() {
+                    if fte == kf.path.extension().unwrap().to_str().unwrap() {
+                        warn += 1;
+                        let log = format!(
+                            "[{}] {}-{} ⇉ '{}' files are excluded from backups.",
+                            Utc::now().format("%Y-%m-%d %H:%M:%S"),
+                            job.name,
+                            self.id,
+                            fte,
+                        );
+                        self.logs.push(log.clone());
+                        println!("{}", log);
+                        continue;
+                    }
+                }
+            }
             // Check if file or directory exists
             if !kf.path.exists() {
                 warn += 1;
@@ -90,6 +128,7 @@ impl Run {
             // Check if f is file or directory
             let fmd = metadata(&kf.path)?;
             if fmd.is_file() {
+                // Clones for future dispatch for this file
                 let progress = Arc::clone(&progress);
                 let bytes_uploaded_arc = Arc::clone(&bytes_uploaded);
                 let upload_logs_arc = Arc::clone(&upload_logs);
@@ -99,6 +138,7 @@ impl Run {
                 let secret = secret.clone();
                 let mut run = self.clone();
                 let kf = kf.clone();
+                // Create the spawned future for this file
                 let upload_file_future = tokio::task::spawn(async move {
                     match run.upload_inner(&kf, &fmd, job, &secret, progress).await {
                         Ok((logs, mut fc, bu)) => {
@@ -118,14 +158,16 @@ impl Run {
                 // If the listed file entry is a dir, use walkdir to
                 // walk all the recursive directories as well. Upload
                 // all files found within the directory.
-                for entry in WalkDir::new(&kf.path) {
+                for entry in WalkDir::new(&kf.path).follow_links(true) {
                     let entry = entry?;
+                    let entry_kf = KipFile::new(entry.path().to_path_buf());
                     // If a directory, skip since upload will
                     // create the parent folder by default
                     let fmd = metadata(entry.path())?;
                     if fmd.is_dir() {
                         continue;
                     }
+                    // Clones for future dispatch for this file
                     let progress = Arc::clone(&progress);
                     let bytes_uploaded_arc = Arc::clone(&bytes_uploaded);
                     let upload_logs_arc = Arc::clone(&upload_logs);
@@ -134,9 +176,12 @@ impl Run {
                     let job = job.clone();
                     let secret = secret.clone();
                     let mut run = self.clone();
-                    let kf = kf.clone();
+                    // Create the spawned future for this file
                     let upload_dir_file_future = tokio::task::spawn(async move {
-                        match run.upload_inner(&kf, &fmd, job, &secret, progress).await {
+                        match run
+                            .upload_inner(&entry_kf, &fmd, job, &secret, progress)
+                            .await
+                        {
                             Ok((logs, mut fc, bu)) => {
                                 upload_logs_arc.lock().unwrap().push(logs);
                                 changed_file_chunks_arc.lock().unwrap().append(&mut fc);
@@ -164,7 +209,7 @@ impl Run {
         self.logs.extend_from_slice(&*upload_logs.lock().unwrap());
         self.files_changed
             .append(&mut *changed_file_chunks.lock().unwrap());
-        let err = err.lock().unwrap();
+        let err = &*err.lock().unwrap();
         if err.len() == 0 && warn == 0 {
             self.status = KipStatus::OK;
         } else if warn > 0 && err.len() == 0 {
@@ -213,11 +258,10 @@ impl Run {
         let bar: Bar = progress.lock().unwrap().bar(
             fmd.len() as usize,
             format!(
-                "[{}] {}-{} ⇉ uploading '{}'",
-                Utc::now().format("%Y-%m-%d %H:%M:%S"),
+                "{}-{} ⇉ uploading '{}'",
                 job.name,
                 self.id,
-                f.path.display().to_string().green(),
+                f.path.display().to_string().cyan(),
             ),
         );
         let hash_ok = f.hash == digest;
@@ -249,6 +293,7 @@ impl Run {
         } else {
             // Arc clone progress bar
             let progress = Arc::clone(&progress);
+            let progress_cancel = Arc::clone(&progress);
             // Upload
             match job
                 .provider
@@ -287,7 +332,7 @@ impl Run {
                 }
                 Err(e) => {
                     // Push logs
-                    let log = format!(
+                    file_upload_log = format!(
                         "[{}] {}-{} ⇉ '{}' upload failed: {}.",
                         Utc::now().format("%Y-%m-%d %H:%M:%S"),
                         job.name,
@@ -295,12 +340,10 @@ impl Run {
                         f.path.display().to_string().red(),
                         e,
                     );
-                    file_upload_log = log.clone();
-                    println!("{}", log);
+                    progress_cancel.lock().unwrap().cancel(bar);
                 }
             };
         }
-        progress.lock().unwrap().is_done(&bar);
         Ok((file_upload_log, files_changed, bytes_uploaded))
     }
 

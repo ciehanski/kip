@@ -26,7 +26,7 @@ pub struct FileChunk {
 
 impl FileChunk {
     pub fn new(hash: &str, offset: usize, length: usize, end: usize) -> Self {
-        FileChunk {
+        Self {
             local_path: PathBuf::new(),
             hash: hash.to_string(),
             offset,

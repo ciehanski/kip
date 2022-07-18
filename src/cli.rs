@@ -43,21 +43,32 @@ pub enum Subcommands {
         file_path: Vec<String>,
     },
 
-    /// Removes a job or its runs & file(s)
+    /// Removes a job & file(s)
     #[clap(alias = "rm", arg_required_else_help = true)]
     Remove {
         /// Name of the job you want to remove files from
         #[clap(value_parser)]
         job: String,
-        /// Number of the job's run to remove
-        #[clap(short = 'r', long = "run", value_parser)]
-        run: Option<usize>,
         /// The paths of all files to remove from job
         #[clap(short = 'f', long = "files", min_values = 0, value_parser)]
         file_path: Option<Vec<String>>,
         /// Purge file from all previous remote backups
         #[clap(short = 'p', long = "purge", action)]
         purge: bool,
+    },
+
+    /// Excludes file(s) from a job
+    #[clap(arg_required_else_help = true)]
+    Exclude {
+        /// Name of the job you want to exclude files from
+        #[clap(required = true, value_parser)]
+        job: String,
+        /// The paths of all files to exclude from a job
+        #[clap(short = 'f', long = "files", min_values = 0, value_parser)]
+        file_path: Option<Vec<String>>,
+        /// The file type extensions to exclude from a job
+        #[clap(short = 'e', long = "extensions", min_values = 0, value_parser)]
+        extensions: Option<Vec<String>>,
     },
 
     /// Starts a manual backup job
@@ -125,12 +136,14 @@ pub enum Subcommands {
 mod tests {
     use assert_cmd::Command;
 
+    #[ignore]
     #[test]
     fn test_cli_runs() {
         let mut cmd = Command::cargo_bin("kip").unwrap();
         cmd.assert().failure().code(2);
     }
 
+    #[ignore]
     #[test]
     fn test_status() {
         let mut cmd = Command::cargo_bin("kip").unwrap();
@@ -138,6 +151,7 @@ mod tests {
         assert.success();
     }
 
+    #[ignore]
     #[test]
     fn test_status_ls() {
         let mut cmd = Command::cargo_bin("kip").unwrap();
@@ -153,6 +167,7 @@ mod tests {
         assert.failure().code(2);
     }
 
+    #[ignore]
     #[test]
     fn test_cli_daemon() {
         let mut cmd = Command::cargo_bin("kip").unwrap();

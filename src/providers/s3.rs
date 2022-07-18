@@ -7,12 +7,10 @@ use crate::crypto::{decrypt, encrypt};
 use crate::providers::KipProvider;
 use anyhow::{bail, Result};
 use async_trait::async_trait;
+use aws_sdk_s3::model::Object;
+use aws_sdk_s3::types::ByteStream;
+use aws_sdk_s3::{Client, Region};
 use linya::{Bar, Progress};
-use rusoto_core::Region;
-use rusoto_s3::{
-    DeleteObjectRequest, GetObjectRequest, ListObjectsV2Request, PutObjectRequest, S3Client,
-    StreamingBody, S3,
-};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
@@ -23,20 +21,22 @@ use uuid::Uuid;
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct KipS3 {
     pub aws_bucket: String,
-    pub aws_region: Region,
+    pub aws_region: String,
 }
 
 impl KipS3 {
-    pub fn new<S: AsRef<str>>(aws_bucket: S, aws_region: Region) -> Self {
-        KipS3 {
-            aws_bucket: aws_bucket.as_ref().to_string(),
-            aws_region,
+    pub fn new<S: Into<String>>(aws_bucket: S, aws_region: Region) -> Self {
+        Self {
+            aws_bucket: aws_bucket.into(),
+            aws_region: aws_region.to_string(),
         }
     }
 }
 
 #[async_trait]
 impl KipProvider for KipS3 {
+    type Item = Object;
+
     async fn upload(
         &self,
         f: &Path,
@@ -47,7 +47,11 @@ impl KipProvider for KipS3 {
         bar: &Bar,
     ) -> Result<(Vec<FileChunk>, usize)> {
         // Create S3 client
-        let s3_client = S3Client::new(self.aws_region.clone());
+        let s3_conf = aws_config::from_env()
+            .region(Region::new(self.aws_region.clone()))
+            .load()
+            .await;
+        let s3_client = Client::new(&s3_conf);
         // Upload each chunk
         let mut chunks = vec![];
         let mut bytes_uploaded = 0;
@@ -66,13 +70,12 @@ impl KipProvider for KipS3 {
             let ce_bytes_len = encrypted.len();
             // Upload
             s3_client
-                .put_object(PutObjectRequest {
-                    bucket: self.aws_bucket.clone(),
-                    key: format!("{}/chunks/{}.chunk", job_id, chunk.hash),
-                    content_length: Some(encrypted.len() as i64),
-                    body: Some(StreamingBody::from(encrypted)),
-                    ..Default::default()
-                })
+                .put_object()
+                .bucket(self.aws_bucket.clone())
+                .key(format!("{}/chunks/{}.chunk", job_id, chunk.hash))
+                .content_length(encrypted.len() as i64)
+                .body(ByteStream::from(encrypted))
+                .send()
                 .await?;
             // Push chunk onto chunks hashmap for return
             chunk.local_path = f.canonicalize()?;
@@ -89,24 +92,24 @@ impl KipProvider for KipS3 {
     }
 
     async fn download(&self, f: &str, secret: &str) -> Result<Vec<u8>> {
-        let s3_client = S3Client::new(self.aws_region.clone());
+        let s3_conf = aws_config::from_env()
+            .region(Region::new(self.aws_region.clone()))
+            .load()
+            .await;
+        let s3_client = Client::new(&s3_conf);
         let result = s3_client
-            .get_object(GetObjectRequest {
-                bucket: self.aws_bucket.to_string(),
-                key: f.to_string(),
-                ..Default::default()
-            })
+            .get_object()
+            .bucket(self.aws_bucket.clone())
+            .key(f.to_string())
+            .send()
             .await?;
         // Read result from S3 and convert to bytes
-        let mut result_stream = match result.body {
-            Some(b) => b.into_async_read(),
-            _ => {
-                bail!("unable to read response from S3.")
-            }
-        };
-        // Read the downloaded S3 bytes into result_bytes
         let mut result_bytes = Vec::<u8>::new();
-        result_stream.read_to_end(&mut result_bytes).await?;
+        result
+            .body
+            .into_async_read()
+            .read_to_end(&mut result_bytes)
+            .await?;
         // Decrypt result_bytes
         let decrypted = match decrypt(&result_bytes, secret) {
             Ok(dc) => dc,
@@ -121,13 +124,17 @@ impl KipProvider for KipS3 {
     }
 
     async fn delete(&self, file_name: &str) -> Result<()> {
-        let s3_client = S3Client::new(self.aws_region.clone());
+        let s3_conf = aws_config::from_env()
+            .region(Region::new(self.aws_region.clone()))
+            .load()
+            .await;
+        let s3_client = Client::new(&s3_conf);
+        // Delete
         s3_client
-            .delete_object(DeleteObjectRequest {
-                bucket: self.aws_bucket.to_string(),
-                key: file_name.to_string(),
-                ..DeleteObjectRequest::default()
-            })
+            .delete_object()
+            .bucket(self.aws_bucket.clone())
+            .key(file_name.to_string())
+            .send()
             .await?;
         Ok(())
     }
@@ -152,13 +159,16 @@ impl KipProvider for KipS3 {
         Ok(false)
     }
 
-    async fn list_all(&self, job_id: Uuid) -> Result<Vec<rusoto_s3::Object>> {
-        let s3_client = S3Client::new(self.aws_region.clone());
+    async fn list_all(&self, job_id: Uuid) -> Result<Vec<Self::Item>> {
+        let s3_conf = aws_config::from_env()
+            .region(Region::new(self.aws_region.clone()))
+            .load()
+            .await;
+        let s3_client = Client::new(&s3_conf);
         let result = s3_client
-            .list_objects_v2(ListObjectsV2Request {
-                bucket: self.aws_bucket.to_string(),
-                ..ListObjectsV2Request::default()
-            })
+            .list_objects_v2()
+            .bucket(self.aws_bucket.clone())
+            .send()
             .await?;
         // Convert S3 result into Vec<S3::Object> which can
         // be used to manipulate the list of files in S3
@@ -166,7 +176,7 @@ impl KipProvider for KipS3 {
             Some(c) => c.into_iter().collect::<Vec<_>>(),
             _ => {
                 // S3 bucket was empty, return an empty Vec
-                let empty_bucket: Vec<rusoto_s3::Object> = vec![];
+                let empty_bucket: Vec<Object> = vec![];
                 return Ok(empty_bucket);
             }
         };

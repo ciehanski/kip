@@ -3,14 +3,12 @@
 //
 
 use crate::crypto::{keyring_delete_secret, keyring_get_secret};
-use crate::providers::s3::KipS3;
 use crate::providers::{KipProvider, KipProviders};
 use crate::run::Run;
 use anyhow::{bail, Context, Result};
 use chrono::prelude::*;
 use colored::*;
 use crypto_hash::{hex_digest, Algorithm};
-use rusoto_core::Region;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
@@ -26,14 +24,11 @@ pub struct Job {
     pub name: String,
     pub provider: KipProviders,
     pub compress: bool,
-    // pub retain_all: bool,
     // pub retention_policy: Frotate,
-    // pub aws_bucket: String,
-    // pub aws_region: Region,
     pub files: Vec<KipFile>,
     pub files_amt: usize,
-    // pub excluded_files: Vec<String>,
-    // pub excluded_file_types: Vec<String>,
+    pub excluded_files: Vec<PathBuf>,
+    pub excluded_file_types: Vec<String>,
     pub runs: HashMap<usize, Run>,
     pub bytes_amt_provider: u64,
     pub first_run: DateTime<Utc>,
@@ -45,16 +40,16 @@ pub struct Job {
 }
 
 impl Job {
-    pub fn new(name: &str, aws_bucket: &str, aws_region: &str) -> Self {
-        Job {
+    pub fn new<S: Into<String>>(name: S, provider: KipProviders) -> Self {
+        Self {
             id: Uuid::new_v4(),
-            name: name.to_string(),
-            provider: KipProviders::S3(KipS3::new(aws_bucket, Job::parse_s3_region(aws_region))),
-            compress: false,
-            // aws_bucket: aws_bucket.to_string(),
-            // aws_region: Job::parse_s3_region(aws_region),
+            name: name.into(),
+            provider,
+            compress: true,
             files: Vec::new(),
             files_amt: 0,
+            excluded_files: Vec::new(),
+            excluded_file_types: Vec::new(),
             runs: HashMap::new(),
             bytes_amt_provider: 0,
             first_run: Utc.ymd(1970, 1, 1).and_hms(0, 0, 0),
@@ -66,36 +61,12 @@ impl Job {
         }
     }
 
-    // Parse aws region input into a Region object
-    fn parse_s3_region(s3_region: &str) -> Region {
-        match s3_region {
-            "ap-east-1" => Region::ApEast1,
-            "ap-northeast-1" => Region::ApNortheast1,
-            "ap-northeast-2" => Region::ApNortheast2,
-            "ap-south-1" => Region::ApSouth1,
-            "ap-southeast-1" => Region::ApSoutheast1,
-            "ap-southeast-2" => Region::ApSoutheast2,
-            "ca-central-1" => Region::CaCentral1,
-            "eu-central-1" => Region::EuCentral1,
-            "eu-west-1" => Region::EuWest1,
-            "eu-west-2" => Region::EuWest2,
-            "eu-west-3" => Region::EuWest3,
-            "eu-north-1" => Region::EuNorth1,
-            "sa-east-1" => Region::SaEast1,
-            "us-east-2" => Region::UsEast2,
-            "us-west-1" => Region::UsWest1,
-            "us-west-2" => Region::UsWest2,
-            "us-gov-east-1" => Region::UsGovEast1,
-            "us-gov-west-1" => Region::UsGovWest1,
-            _ => Region::UsEast1,
-        }
-    }
-
     pub async fn run_upload(&mut self, secret: &str) -> Result<()> {
         // Check and confirm that job is not paused
         if self.paused {
             bail!(
-                "unable to run. '{}' is paused. Please run 'kip resume <job>' to resume job.",
+                "unable to run. '{}' is paused. Please run 'kip resume {}' to resume job.",
+                self.name,
                 self.name
             )
         }
@@ -144,7 +115,7 @@ impl Job {
                 self.first_run = Utc::now();
             }
             println!(
-                "{} job '{}' completed uploading to '{}' successfully .",
+                "{} job '{}' completed uploading to '{}' successfully.",
                 "[OK]".green(),
                 &self.name,
                 &self.provider.s3().unwrap().aws_bucket,
@@ -156,6 +127,7 @@ impl Job {
         Ok(())
     }
 
+    /// Performs a restore on the run specified for a job
     pub async fn run_restore(&self, run: usize, secret: &str, output_folder: &str) -> Result<()> {
         // Get run from job
         if let Some(r) = self.runs.get(&run) {
@@ -205,7 +177,7 @@ impl Job {
     }
 
     // Get correct number of files in job (not just...
-    // entries within 'files')
+    // the len of 'files')
     pub fn get_files_amt(&self) -> Result<usize> {
         let mut correct_files_num: usize = 0;
         for f in self.files.iter() {
@@ -257,7 +229,10 @@ impl Job {
         // Set AWS env vars to user's keys
         env::set_var("AWS_ACCESS_KEY_ID", s3acc);
         env::set_var("AWS_SECRET_ACCESS_KEY", s3sec);
-        env::set_var("AWS_REGION", self.provider.s3().unwrap().aws_region.name());
+        env::set_var(
+            "AWS_REGION",
+            self.provider.s3().unwrap().aws_region.to_string(),
+        );
         Ok(())
     }
 
@@ -298,11 +273,11 @@ pub enum KipStatus {
 impl Display for KipStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            KipStatus::OK => write!(f, "OK"),
-            KipStatus::ERR => write!(f, "ERR"),
-            KipStatus::WARN => write!(f, "WARN"),
-            KipStatus::IN_PROGRESS => write!(f, "IN_PROGRESS"),
-            KipStatus::NEVER_RUN => write!(f, "NEVER_RUN"),
+            KipStatus::OK => write!(f, "{}", "OK".green()),
+            KipStatus::ERR => write!(f, "{}", "ERR".red()),
+            KipStatus::WARN => write!(f, "{}", "WARN".yellow()),
+            KipStatus::IN_PROGRESS => write!(f, "{}", "IN_PROGRESS".cyan()),
+            KipStatus::NEVER_RUN => write!(f, "{}", "NEVER_RUN".bold()),
         }
     }
 }
@@ -325,12 +300,15 @@ impl KipFile {
 #[cfg(test)]
 mod tests {
     use crate::crypto::keyring_set_secret;
+    use crate::providers::s3::KipS3;
+    use aws_sdk_s3::Region;
 
     use super::*;
 
     #[test]
     fn test_get_files_amt() {
-        let mut j = Job::new("test1", "testing1", "us-east-1");
+        let provider = KipProviders::S3(KipS3::new("test1", Region::new("us-east-1".to_owned())));
+        let mut j = Job::new("testing1", provider);
         j.files.push(KipFile::new(PathBuf::from("test/vandy.jpg")));
         j.files.push(KipFile::new(PathBuf::from("test/vandy.jpg")));
         j.files.push(KipFile::new(PathBuf::from("test/vandy.jpg")));
@@ -341,7 +319,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_file_hashes() {
-        let mut j = Job::new("test1", "testing1", "us-east-1");
+        let provider = KipProviders::S3(KipS3::new("test1", Region::new("us-east-1".to_owned())));
+        let mut j = Job::new("testing1", provider);
         j.files.push(KipFile::new(PathBuf::from("test/vandy.jpg")));
         j.files.push(KipFile::new(PathBuf::from("test/random.txt")));
         let hash_result = j.get_file_hashes().await;
@@ -356,20 +335,14 @@ mod tests {
         )
     }
 
-    #[test]
-    fn test_parse_s3_region() {
-        let region1 = Job::parse_s3_region("us-west-400");
-        assert_eq!(region1, Region::UsEast1);
-        let region2 = Job::parse_s3_region("us-west-2");
-        assert_eq!(region2, Region::UsWest2);
-        let region3 = Job::parse_s3_region("us-east-2");
-        assert_eq!(region3, Region::UsEast2)
-    }
-
     #[ignore]
     #[test]
     fn test_set_get_keyring() {
-        let j = Job::new("test1", "testing1", "us-east-1");
+        let provider = KipProviders::S3(KipS3::new(
+            "kip_test_bucket",
+            Region::new("us-east-1".to_owned()),
+        ));
+        let j = Job::new("testing2", provider);
         let result = keyring_set_secret(&j.name, "hunter2");
         assert!(result.is_ok());
         let get_result = keyring_get_secret(&j.name);

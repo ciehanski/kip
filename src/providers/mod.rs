@@ -3,10 +3,11 @@
 //
 
 pub mod s3;
-// pub mod usb;
+pub mod usb;
 
 use crate::chunk::FileChunk;
 use crate::providers::s3::KipS3;
+use crate::providers::usb::KipUsb;
 use anyhow::Result;
 use async_trait::async_trait;
 use linya::{Bar, Progress};
@@ -18,11 +19,13 @@ use uuid::Uuid;
 
 #[async_trait]
 pub trait KipProvider {
+    type Item;
+
     async fn upload(
         &self,
         source: &Path,
         chunks: HashMap<FileChunk, &[u8]>,
-        job_id: Uuid,
+        job: Uuid,
         secret: &str,
         progress: Arc<Mutex<Progress>>,
         bar: &Bar,
@@ -30,7 +33,7 @@ pub trait KipProvider {
     async fn download(&self, source: &str, secret: &str) -> Result<Vec<u8>>;
     async fn delete(&self, remote_path: &str) -> Result<()>;
     async fn contains(&self, job: Uuid, obj_name: &str) -> Result<bool>;
-    async fn list_all(&self, job: Uuid) -> Result<Vec<rusoto_s3::Object>>;
+    async fn list_all(&self, job: Uuid) -> Result<Vec<Self::Item>>;
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -55,16 +58,10 @@ impl KipProviders {
         }
     }
 
-    pub fn usb(&self) -> Option<KipUsb> {
+    pub fn usb(&self) -> Option<&KipUsb> {
         match self {
-            KipProviders::Usb(usb) => Some(*usb),
+            KipProviders::Usb(usb) => Some(usb),
             _ => None,
         }
     }
-}
-
-#[derive(Copy, Clone, Debug, Deserialize, Serialize)]
-pub struct KipUsb {
-    pub vendor_id: u16,
-    pub product_id: u16,
 }
