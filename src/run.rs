@@ -210,9 +210,9 @@ impl Run {
         self.files_changed
             .append(&mut *changed_file_chunks.lock().unwrap());
         let err = &*err.lock().unwrap();
-        if err.len() == 0 && warn == 0 {
+        if err.is_empty() && warn == 0 {
             self.status = KipStatus::OK;
-        } else if warn > 0 && err.len() == 0 {
+        } else if warn > 0 && err.is_empty() {
             self.status = KipStatus::WARN;
         } else {
             self.status = KipStatus::ERR;

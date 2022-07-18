@@ -229,10 +229,7 @@ impl Job {
         // Set AWS env vars to user's keys
         env::set_var("AWS_ACCESS_KEY_ID", s3acc);
         env::set_var("AWS_SECRET_ACCESS_KEY", s3sec);
-        env::set_var(
-            "AWS_REGION",
-            self.provider.s3().unwrap().aws_region.to_string(),
-        );
+        env::set_var("AWS_REGION", &self.provider.s3().unwrap().aws_region);
         Ok(())
     }
 
