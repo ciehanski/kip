@@ -158,8 +158,25 @@ fn main() {
                     }
                     1 => {
                         // USB
+                        let disks =
+                            sys_metrics::disks::get_partitions_physical().unwrap_or_else(|e| {
+                                terminate!(1, "unable to get available disks: {}", e)
+                            });
+                        let disks_str: Vec<String> = disks.iter().map(|d| d.name.clone()).collect();
+                        // Confirm which USB device
+                        let provider_selection: usize =
+                            Select::with_theme(&ColorfulTheme::default())
+                                .items(&disks_str)
+                                .default(0)
+                                .interact()
+                                .expect("[ERR] unable to create provider selection menu.");
                         // Create the new job
-                        let provider = KipProviders::Usb(KipUsb::new(""));
+                        let provider = KipProviders::Usb(KipUsb::new(
+                            disks[provider_selection].name.clone(),
+                            disks[provider_selection].mount_point.clone(),
+                            disks[provider_selection].total_space,
+                            disks[provider_selection].avail_space,
+                        ));
                         let new_job = Job::new(&job, provider);
                         // Push new job in config
                         md.jobs.insert(job.clone(), new_job);
@@ -485,7 +502,7 @@ fn main() {
                 // Confirm correct secret from user input
                 let secret = confirm_secret(&j.name);
                 // Upload all files in a seperate thread
-                match j.run_upload(&secret).await {
+                match j.start_run(&secret).await {
                     Ok(_) => {}
                     Err(e) => terminate!(
                         8,
@@ -529,7 +546,7 @@ fn main() {
                     }
                 };
                 // Run the restore
-                match j.run_restore(run, &secret, &output_folder).await {
+                match j.start_restore(run, &secret, &output_folder).await {
                     Ok(_) => {
                         println!("{} job '{}' restored successfully.", "[OK]".green(), &job,);
                     }
@@ -582,7 +599,7 @@ fn main() {
                 // Set set to !paused
                 j.paused = false;
                 // Run a manual upload
-                match j.run_upload(&secret).await {
+                match j.start_run(&secret).await {
                     Ok(_) => {}
                     Err(e) => terminate!(
                         8,

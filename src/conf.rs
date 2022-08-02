@@ -153,7 +153,7 @@ impl KipConfMetadata {
                 // the configured backup interval, start an upload run
                 let secret = keyring_get_secret(&format!("com.ciehanski.kip.{}", &j.name))?;
                 if dur_since_run_start.num_minutes() >= kc.settings.backup_interval as i64 {
-                    j.run_upload(&secret).await?;
+                    j.start_run(&secret).await?;
                 }
             }
         }

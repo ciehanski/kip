@@ -45,7 +45,7 @@ impl KipProvider for KipS3 {
         secret: &str,
         progress: Arc<Mutex<Progress>>,
         bar: &Bar,
-    ) -> Result<(Vec<FileChunk>, usize)> {
+    ) -> Result<(Vec<FileChunk>, u64)> {
         // Create S3 client
         let s3_conf = aws_config::from_env()
             .region(Region::new(self.aws_region.clone()))
@@ -54,7 +54,7 @@ impl KipProvider for KipS3 {
         let s3_client = Client::new(&s3_conf);
         // Upload each chunk
         let mut chunks = vec![];
-        let mut bytes_uploaded = 0;
+        let mut bytes_uploaded: u64 = 0;
         for (mut chunk, chunk_bytes) in chunks_map {
             // Always compress before encryption
             let compressed = crate::run::compress(chunk_bytes).await?;
@@ -86,7 +86,8 @@ impl KipProvider for KipS3 {
                 .lock()
                 .unwrap()
                 .inc_and_draw(bar, chunk_bytes.len());
-            bytes_uploaded += ce_bytes_len;
+            let ce_bytes_len_u64: u64 = ce_bytes_len.try_into()?;
+            bytes_uploaded += ce_bytes_len_u64;
         }
         Ok((chunks, bytes_uploaded))
     }

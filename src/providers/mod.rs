@@ -29,7 +29,7 @@ pub trait KipProvider {
         secret: &str,
         progress: Arc<Mutex<Progress>>,
         bar: &Bar,
-    ) -> Result<(Vec<FileChunk>, usize)>;
+    ) -> Result<(Vec<FileChunk>, u64)>;
     async fn download(&self, source: &str, secret: &str) -> Result<Vec<u8>>;
     async fn delete(&self, remote_path: &str) -> Result<()>;
     async fn contains(&self, job: Uuid, obj_name: &str) -> Result<bool>;

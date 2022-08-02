@@ -26,14 +26,14 @@ pub struct Job {
     pub compress: bool,
     // pub retention_policy: Frotate,
     pub files: Vec<KipFile>,
-    pub files_amt: usize,
+    pub files_amt: u64,
     pub excluded_files: Vec<PathBuf>,
     pub excluded_file_types: Vec<String>,
     pub runs: HashMap<usize, Run>,
     pub bytes_amt_provider: u64,
     pub first_run: DateTime<Utc>,
     pub last_run: DateTime<Utc>,
-    pub total_runs: usize,
+    pub total_runs: u64,
     pub last_status: KipStatus,
     pub created: DateTime<Utc>,
     pub paused: bool,
@@ -61,7 +61,7 @@ impl Job {
         }
     }
 
-    pub async fn run_upload(&mut self, secret: &str) -> Result<()> {
+    pub async fn start_run(&mut self, secret: &str) -> Result<()> {
         // Check and confirm that job is not paused
         if self.paused {
             bail!(
@@ -81,13 +81,13 @@ impl Job {
         // since it will clone all a job's runs and their logs
         let me = self.clone();
         // Tell the run to start uploading
-        match r.upload(me, secret.to_string()).await {
+        match r.start(me, secret.to_string()).await {
             Ok(_) => {}
             Err(e) => {
                 // Set job status
                 self.last_status = KipStatus::ERR;
                 // Add run to job
-                self.runs.insert(r.id, r);
+                self.runs.insert(r.id.try_into()?, r);
                 self.total_runs += 1;
                 self.last_run = Utc::now();
                 if self.first_run.format("%Y-%m-%d %H:%M:%S").to_string() == "1970-01-01 00:00:00" {
@@ -108,7 +108,7 @@ impl Job {
             // Get new file hashes
             self.get_file_hashes().await?;
             // Add run to job only if anything was uploaded
-            self.runs.insert(r.id, r);
+            self.runs.insert(r.id.try_into()?, r);
             self.total_runs += 1;
             self.last_run = Utc::now();
             if self.first_run.format("%Y-%m-%d %H:%M:%S").to_string() == "1970-01-01 00:00:00" {
@@ -128,7 +128,7 @@ impl Job {
     }
 
     /// Performs a restore on the run specified for a job
-    pub async fn run_restore(&self, run: usize, secret: &str, output_folder: &str) -> Result<()> {
+    pub async fn start_restore(&self, run: usize, secret: &str, output_folder: &str) -> Result<()> {
         // Get run from job
         if let Some(r) = self.runs.get(&run) {
             // Set AWS env vars for backup
@@ -178,8 +178,8 @@ impl Job {
 
     // Get correct number of files in job (not just...
     // the len of 'files')
-    pub fn get_files_amt(&self) -> Result<usize> {
-        let mut correct_files_num: usize = 0;
+    pub fn get_files_amt(&self) -> Result<u64> {
+        let mut correct_files_num: u64 = 0;
         for f in self.files.iter() {
             if f.path.exists() && f.path.is_dir() {
                 for entry in WalkDir::new(&f.path) {

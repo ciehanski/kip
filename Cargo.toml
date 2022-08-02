@@ -1,12 +1,13 @@
 [package]
 name = "kip"
-version = "0.1.2"
+version = "0.1.3"
 description = "The simple encrypted backups tool."
 authors = ["Ryan Ciehanski <ryan@ciehanski.com>"]
 repository = "https://github.com/ciehanski/kip"
 edition = "2021"
 
 [dependencies]
+anyhow = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
 walkdir = "2"
 clap = { version = "3.2", features = ["derive"] }
@@ -16,9 +17,9 @@ serde_json = "1.0"
 dialoguer = "0.10"
 uuid = { version = "1.1", features = ["serde", "v4"] }
 directories = "4.0"
-aws-config = "0.15"
-aws-sdk-s3 = "0.15"
-tokio = { version = "1.20", features = ["full"] }
+aws-config = "0.46"
+aws-sdk-s3 = "0.16"
+tokio = { version = "1", features = ["full"] }
 async-trait = "0.1.56"
 fastcdc = "1.0.6"
 aead = "0.4.3"
@@ -37,7 +38,7 @@ pretty-bytes = "0.2"
 prettytable-rs = "0.8"
 colored = "2.0"
 humantime = "2.1"
-anyhow = "1.0"
+sys_metrics = "0.2"
 # pavao = "0.1.2"
 
 [dev-dependencies]

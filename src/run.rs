@@ -4,7 +4,7 @@
 
 use crate::chunk::{chunk_file, FileChunk};
 use crate::job::{Job, KipFile, KipStatus};
-use crate::providers::KipProvider;
+use crate::providers::{KipProvider, KipProviders};
 use anyhow::{bail, Result};
 use async_compression::tokio::write::{ZstdDecoder, ZstdEncoder};
 use chrono::prelude::*;
@@ -26,7 +26,7 @@ use walkdir::WalkDir;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Run {
-    pub id: usize,
+    pub id: u64,
     pub started: DateTime<Utc>,
     pub time_elapsed: String,
     pub finished: DateTime<Utc>,
@@ -37,7 +37,7 @@ pub struct Run {
 }
 
 impl Run {
-    pub fn new(id: usize) -> Self {
+    pub fn new(id: u64) -> Self {
         Run {
             id,
             started: Utc.ymd(1970, 1, 1).and_hms(0, 0, 0),
@@ -50,7 +50,7 @@ impl Run {
         }
     }
 
-    pub async fn upload(&mut self, job: Job, secret: String) -> Result<()> {
+    pub async fn start(&mut self, job: Job, secret: String) -> Result<()> {
         // Create progress bar context
         let progress = Arc::new(Mutex::new(Progress::new()));
         let start_log = format!(
@@ -59,9 +59,11 @@ impl Run {
             job.name,
             self.id,
         );
+
         // Print job start
         self.logs.push(start_log.clone());
         println!("{}", start_log);
+
         // Set run metadata
         self.started = Utc::now();
         self.status = KipStatus::IN_PROGRESS;
@@ -71,6 +73,7 @@ impl Run {
         let err = Arc::new(Mutex::new(Vec::<String>::new()));
         let upload_logs = Arc::new(Mutex::new(Vec::<String>::new()));
         let changed_file_chunks = Arc::new(Mutex::new(Vec::<FileChunk>::new()));
+
         // Create futures for each file iteration and join
         // at the end of this function to let for concurrent uploads
         let upload_futures = FuturesUnordered::new();
@@ -93,6 +96,7 @@ impl Run {
                     }
                 }
             }
+
             // Check if file type is excluded
             if !job.excluded_file_types.is_empty() {
                 for fte in job.excluded_file_types.iter() {
@@ -111,6 +115,7 @@ impl Run {
                     }
                 }
             }
+
             // Check if file or directory exists
             if !kf.path.exists() {
                 warn += 1;
@@ -125,6 +130,7 @@ impl Run {
                 println!("{}", log);
                 continue;
             }
+
             // Check if f is file or directory
             let fmd = metadata(&kf.path)?;
             if fmd.is_file() {
@@ -138,9 +144,10 @@ impl Run {
                 let secret = secret.clone();
                 let mut run = self.clone();
                 let kf = kf.clone();
+
                 // Create the spawned future for this file
                 let upload_file_future = tokio::task::spawn(async move {
-                    match run.upload_inner(&kf, &fmd, job, &secret, progress).await {
+                    match run.start_inner(&kf, &fmd, job, &secret, progress).await {
                         Ok((logs, mut fc, bu)) => {
                             upload_logs_arc.lock().unwrap().push(logs);
                             changed_file_chunks_arc.lock().unwrap().append(&mut fc);
@@ -151,6 +158,7 @@ impl Run {
                         }
                     };
                 });
+
                 // Add file upload future join handler to vec
                 // to be run at the same time later in this function
                 upload_futures.push(upload_file_future);
@@ -161,12 +169,14 @@ impl Run {
                 for entry in WalkDir::new(&kf.path).follow_links(true) {
                     let entry = entry?;
                     let entry_kf = KipFile::new(entry.path().to_path_buf());
+
                     // If a directory, skip since upload will
                     // create the parent folder by default
                     let fmd = metadata(entry.path())?;
                     if fmd.is_dir() {
                         continue;
                     }
+
                     // Clones for future dispatch for this file
                     let progress = Arc::clone(&progress);
                     let bytes_uploaded_arc = Arc::clone(&bytes_uploaded);
@@ -176,10 +186,11 @@ impl Run {
                     let job = job.clone();
                     let secret = secret.clone();
                     let mut run = self.clone();
+
                     // Create the spawned future for this file
                     let upload_dir_file_future = tokio::task::spawn(async move {
                         match run
-                            .upload_inner(&entry_kf, &fmd, job, &secret, progress)
+                            .start_inner(&entry_kf, &fmd, job, &secret, progress)
                             .await
                         {
                             Ok((logs, mut fc, bu)) => {
@@ -192,6 +203,7 @@ impl Run {
                             }
                         };
                     });
+
                     // Add file upload future join handler to vec
                     // to be run at the same time later in this function
                     upload_futures.push(upload_dir_file_future);
@@ -201,6 +213,7 @@ impl Run {
         // Join (run) all file upload futures and wait for them
         // all to finish here
         futures::future::join_all(upload_futures).await;
+
         // Set run metadata
         self.finished = Utc::now();
         let dur = self.finished.signed_duration_since(started).to_std()?;
@@ -220,6 +233,8 @@ impl Run {
                 eprintln!("{}", e);
             }
         }
+
+        // Print logs
         let fin_log = format!(
             "[{}] {}-{} ⇉ upload completed.",
             Utc::now().format("%Y-%m-%d %H:%M:%S"),
@@ -228,10 +243,11 @@ impl Run {
         );
         self.logs.push(fin_log.clone());
         println!("{}", fin_log);
+
         Ok(())
     }
 
-    async fn upload_inner(
+    async fn start_inner(
         &mut self,
         f: &KipFile,
         fmd: &Metadata,
@@ -251,7 +267,7 @@ impl Run {
         } else {
             file.extend_from_slice(&tokio::fs::read(&f.path).await?);
         }
-        let digest = hex_digest(Algorithm::SHA256, &file);
+
         // Check if all file chunks are already in S3
         // to avoid overwite and needless upload
         let chunks_map = chunk_file(&file);
@@ -264,7 +280,7 @@ impl Run {
                 f.path.display().to_string().cyan(),
             ),
         );
-        let hash_ok = f.hash == digest;
+
         let mut chunks_missing: usize = 0;
         let mut bytes_uploaded: u64 = 0;
         for (chunk, _) in chunks_map.iter() {
@@ -278,8 +294,10 @@ impl Run {
                 chunks_missing += 1;
             };
         }
+
         // If hash is the same and no chunks are missing from S3
         // skip uploading this file
+        let hash_ok = f.hash == hex_digest(Algorithm::SHA256, &file);
         if hash_ok && chunks_missing == 0 {
             let log = format!(
                 "[{}] {}-{} ⇉ '{}' skipped, no changes found.",
@@ -291,58 +309,74 @@ impl Run {
             file_upload_log = log.clone();
             println!("{}", log);
         } else {
+            // Hash is not the same, lets upload these chunks
             // Arc clone progress bar
             let progress = Arc::clone(&progress);
             let progress_cancel = Arc::clone(&progress);
-            // Upload
-            match job
-                .provider
-                .s3()
-                .unwrap()
-                .upload(
-                    &f.path.canonicalize()?,
-                    chunks_map,
-                    job.id,
-                    secret,
-                    progress,
-                    &bar,
-                )
-                .await
-            {
-                Ok((chunked_file, bu)) => {
-                    // Confirm the chunked file is not empty AKA
-                    // this chunk has not been modified, skip it
-                    if !chunked_file.is_empty() {
-                        // Increase bytes uploaded for this run
-                        bytes_uploaded += bu as u64;
-                        // Push chunks onto run's changed files
-                        for c in chunked_file {
-                            files_changed.push(c);
+
+            // Upload to the provider for this job
+            // Either S3, or USB
+            match job.provider {
+                KipProviders::S3(s3) => {
+                    match s3
+                        .upload(
+                            &f.path.canonicalize()?,
+                            chunks_map,
+                            job.id,
+                            secret,
+                            progress,
+                            &bar,
+                        )
+                        .await
+                    {
+                        Ok((chunked_file, bu)) => {
+                            // Confirm the chunked file is not empty AKA
+                            // this chunk has not been modified, skip it
+                            if !chunked_file.is_empty() {
+                                // Increase bytes uploaded for this run
+                                bytes_uploaded += bu as u64;
+                                // Push chunks onto run's changed files
+                                for c in chunked_file {
+                                    files_changed.push(c);
+                                }
+                                // Push logs
+                                file_upload_log = format!(
+                                    "[{}] {}-{} ⇉ '{}' uploaded successfully to '{}'.",
+                                    Utc::now().format("%Y-%m-%d %H:%M:%S"),
+                                    job.name,
+                                    self.id,
+                                    f.path.display().to_string().green(),
+                                    s3.aws_bucket,
+                                );
+                            }
                         }
-                        // Push logs
-                        file_upload_log = format!(
-                            "[{}] {}-{} ⇉ '{}' uploaded successfully to '{}'.",
-                            Utc::now().format("%Y-%m-%d %H:%M:%S"),
-                            job.name,
-                            self.id,
-                            f.path.display().to_string().green(),
-                            job.provider.s3().unwrap().aws_bucket,
-                        );
-                    }
+                        Err(e) => {
+                            // Push logs
+                            file_upload_log = format!(
+                                "[{}] {}-{} ⇉ '{}' upload failed: {}.",
+                                Utc::now().format("%Y-%m-%d %H:%M:%S"),
+                                job.name,
+                                self.id,
+                                f.path.display().to_string().red(),
+                                e,
+                            );
+                            progress_cancel.lock().unwrap().cancel(bar);
+                        }
+                    };
                 }
-                Err(e) => {
-                    // Push logs
-                    file_upload_log = format!(
-                        "[{}] {}-{} ⇉ '{}' upload failed: {}.",
-                        Utc::now().format("%Y-%m-%d %H:%M:%S"),
-                        job.name,
-                        self.id,
-                        f.path.display().to_string().red(),
-                        e,
-                    );
-                    progress_cancel.lock().unwrap().cancel(bar);
+                KipProviders::Usb(usb) => {
+                    // TODO: fully implement later on
+                    usb.upload(
+                        &f.path.canonicalize()?,
+                        chunks_map,
+                        job.id,
+                        secret,
+                        progress,
+                        &bar,
+                    )
+                    .await?;
                 }
-            };
+            }
         }
         Ok((file_upload_log, files_changed, bytes_uploaded))
     }
@@ -481,7 +515,7 @@ fn assemble_chunks(
     for (chunk, chunk_bytes) in chunks {
         // Seeks to the offset where this chunked data
         // segment begins and write it to completion
-        cfile.seek(SeekFrom::Start(chunk.offset as u64))?;
+        cfile.seek(SeekFrom::Start(chunk.offset.try_into()?))?;
         cfile.write_all(chunk_bytes)?;
     }
     // Maybe compare fmd of cfile to known size of
