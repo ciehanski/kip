@@ -76,12 +76,8 @@ impl Job {
         self.last_status = KipStatus::IN_PROGRESS;
         // Set AWS env vars for backup
         self.set_s3_env_vars()?;
-        // Clone job for upload metadata
-        // TODO: would like to avoid this clone if possible
-        // since it will clone all a job's runs and their logs
-        let me = self.clone();
         // Tell the run to start uploading
-        match r.start(me, secret.to_string()).await {
+        match r.start(self.to_owned(), secret.to_string()).await {
             Ok(_) => {}
             Err(e) => {
                 // Set job status
