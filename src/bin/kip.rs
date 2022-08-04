@@ -18,6 +18,7 @@ use prettytable::{Cell, Row, Table};
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use sysinfo::{DiskExt, System, SystemExt};
 use tokio::runtime::Builder;
 
 fn main() {
@@ -158,31 +159,57 @@ fn main() {
                     }
                     1 => {
                         // USB
-                        let disks =
-                            sys_metrics::disks::get_partitions_physical().unwrap_or_else(|e| {
-                                terminate!(1, "unable to get available disks: {}", e)
-                            });
-                        let disks_str: Vec<String> = disks.iter().map(|d| d.name.clone()).collect();
+                        let mut sys = System::new();
+                        sys.refresh_disks_list();
+                        let disks = sys.disks();
+                        let disks_str: Vec<String> = disks
+                            .iter()
+                            .filter_map(|d| {
+                                let disk = d
+                                    .name()
+                                    .to_str()
+                                    .expect("[ERR] unable to convert disk's OsStr to String");
+                                match disk {
+                                    "Macintosh HD - Data" => None,
+                                    "VM" => None,
+                                    "Preboot" => None,
+                                    "Update" => None,
+                                    "Recovery" => None,
+                                    "" => None,
+                                    _ => Some(disk.to_owned()),
+                                }
+                            })
+                            .collect();
+                        // Ensure USB devices were found
+                        if disks_str.is_empty() {
+                            terminate!(1, "no USB devices detected.");
+                        };
                         // Confirm which USB device
                         let provider_selection: usize =
                             Select::with_theme(&ColorfulTheme::default())
                                 .items(&disks_str)
                                 .default(0)
                                 .interact()
-                                .expect("[ERR] unable to create provider selection menu.");
+                                .expect("[ERR] unable to create USB selection menu");
                         // Create the new job
                         let provider = KipProviders::Usb(KipUsb::new(
-                            disks[provider_selection].name.clone(),
-                            disks[provider_selection].mount_point.clone(),
-                            disks[provider_selection].total_space,
-                            disks[provider_selection].avail_space,
+                            disks[provider_selection]
+                                .name()
+                                .to_str()
+                                .unwrap_or_else(|| {
+                                    terminate!(1, "[ERR] unable to convert disk's OsStr to String");
+                                })
+                                .to_owned(),
+                            disks[provider_selection].mount_point(),
+                            disks[provider_selection].total_space(),
+                            disks[provider_selection].available_space(),
                         ));
                         let new_job = Job::new(&job, provider);
                         // Push new job in config
                         md.jobs.insert(job.clone(), new_job);
                     }
                     _ => {
-                        terminate!(69, "Hey! Don't do that!");
+                        terminate!(1, "Invalid selection. Please try again.");
                     }
                 }
                 // // Store new job in config
@@ -650,12 +677,11 @@ fn main() {
                 // Create the table
                 let mut table = Table::new();
                 if job == None && run == None {
-                    // Create the title row
+                    // Create the header row
                     table.add_row(Row::new(vec![
                         Cell::new("Name"),
                         Cell::new("ID"),
-                        Cell::new("Bucket"),
-                        Cell::new("Region"),
+                        Cell::new("Provider"),
                         Cell::new("Files"),
                         Cell::new("Total Runs"),
                         Cell::new("Last Run"),
@@ -671,12 +697,15 @@ fn main() {
                             let converted: DateTime<Local> = DateTime::from(j.last_run);
                             converted.format("%Y-%m-%d %H:%M:%S").to_string()
                         };
+                        let provider = match j.provider {
+                            KipProviders::S3(_) => "S3",
+                            KipProviders::Usb(_) => "USB",
+                        };
                         // Add row with job info
                         table.add_row(Row::new(vec![
                             Cell::new(&format!("{}", &j.name.to_string().green())),
                             Cell::new(&format!("{}", j.id)),
-                            Cell::new(&j.provider.s3().unwrap().aws_bucket),
-                            Cell::new(&j.provider.s3().unwrap().aws_region),
+                            Cell::new(provider),
                             Cell::new(&format!("{}", j.files_amt)),
                             Cell::new(&format!("{}", j.total_runs)),
                             Cell::new(&correct_last_run),
@@ -686,18 +715,7 @@ fn main() {
                     // Print the job table
                     table.printstd();
                 } else if job != None && run == None {
-                    table.add_row(Row::new(vec![
-                        Cell::new("Name"),
-                        Cell::new("ID"),
-                        Cell::new("Bucket"),
-                        Cell::new("Region"),
-                        Cell::new("Selected Files"),
-                        Cell::new("Total Runs"),
-                        Cell::new("Last Run"),
-                        Cell::new("Bytes (Provider)"),
-                        Cell::new("Status"),
-                    ]));
-                    let j = md.jobs.get(&job.clone().unwrap()).unwrap_or_else(|| {
+                    let j = md.jobs.get(job.as_ref().unwrap()).unwrap_or_else(|| {
                         terminate!(
                             2,
                             "{} job '{}' doesn't exist.",
@@ -729,31 +747,65 @@ fn main() {
                     } else {
                         correct_files.push_str("N/A");
                     }
-                    // Add row with job info
-                    table.add_row(Row::new(vec![
-                        Cell::new(&format!("{}", &j.name.to_string().green())),
-                        Cell::new(&format!("{}", j.id)),
-                        Cell::new(&j.provider.s3().unwrap().aws_bucket),
-                        Cell::new(&j.provider.s3().unwrap().aws_region),
-                        Cell::new(&correct_files),
-                        Cell::new(&format!("{}", j.total_runs)),
-                        Cell::new(&correct_last_run),
-                        Cell::new(&convert(j.bytes_amt_provider as f64)),
-                        Cell::new(&format!("{}", j.last_status)),
-                    ]));
+                    match &j.provider {
+                        KipProviders::S3(s3) => {
+                            table.add_row(Row::new(vec![
+                                Cell::new("Name"),
+                                Cell::new("ID"),
+                                Cell::new("Bucket"),
+                                Cell::new("Region"),
+                                Cell::new("Selected Files"),
+                                Cell::new("Total Runs"),
+                                Cell::new("Last Run"),
+                                Cell::new("Bytes (Provider)"),
+                                Cell::new("Status"),
+                            ]));
+                            // Add row with job info
+                            table.add_row(Row::new(vec![
+                                Cell::new(&format!("{}", &j.name.to_string().green())),
+                                Cell::new(&format!("{}", j.id)),
+                                Cell::new(&s3.aws_bucket),
+                                Cell::new(&s3.aws_region),
+                                Cell::new(&correct_files),
+                                Cell::new(&format!("{}", j.total_runs)),
+                                Cell::new(&correct_last_run),
+                                Cell::new(&convert(j.bytes_amt_provider as f64)),
+                                Cell::new(&format!("{}", j.last_status)),
+                            ]));
+                        }
+                        KipProviders::Usb(usb) => {
+                            // Create the header row
+                            table.add_row(Row::new(vec![
+                                Cell::new("Name"),
+                                Cell::new("ID"),
+                                Cell::new("USB Name"),
+                                Cell::new("USB Utilization"),
+                                Cell::new("USB Capacity"),
+                                Cell::new("Selected Files"),
+                                Cell::new("Total Runs"),
+                                Cell::new("Last Run"),
+                                Cell::new("Bytes (Provider)"),
+                                Cell::new("Status"),
+                            ]));
+                            // Add row with job info
+                            table.add_row(Row::new(vec![
+                                Cell::new(&format!("{}", &j.name.to_string().green())),
+                                Cell::new(&format!("{}", j.id)),
+                                Cell::new(&usb.name),
+                                Cell::new(&convert(usb.used_capacity as f64)),
+                                Cell::new(&convert(usb.capacity as f64)),
+                                Cell::new(&correct_files),
+                                Cell::new(&format!("{}", j.total_runs)),
+                                Cell::new(&correct_last_run),
+                                Cell::new(&convert(j.bytes_amt_provider as f64)),
+                                Cell::new(&format!("{}", j.last_status)),
+                            ]));
+                        }
+                    }
                     // Print the job table
                     table.printstd();
                 } else if job != None && run != None {
-                    table.add_row(Row::new(vec![
-                        Cell::new("Name"),
-                        Cell::new("Bucket"),
-                        Cell::new("Region"),
-                        Cell::new("Chunks Uploaded"),
-                        Cell::new("Bytes Uploaded"),
-                        Cell::new("Run Time"),
-                        Cell::new("Status"),
-                    ]));
-                    let j = md.jobs.get(&job.clone().unwrap()).unwrap_or_else(|| {
+                    let j = md.jobs.get(job.as_ref().unwrap()).unwrap_or_else(|| {
                         terminate!(
                             2,
                             "{} job '{}' doesn't exist.",
@@ -770,16 +822,52 @@ fn main() {
                             &job.clone().unwrap(),
                         );
                     });
-                    // Add row with run info
-                    table.add_row(Row::new(vec![
-                        Cell::new(&format!("{}", &format!("{}-{}", j.name, r.id).green())),
-                        Cell::new(&j.provider.s3().unwrap().aws_bucket),
-                        Cell::new(&j.provider.s3().unwrap().aws_region),
-                        Cell::new(&format!("{}", r.files_changed.len())),
-                        Cell::new(&convert(r.bytes_uploaded as f64)),
-                        Cell::new(&r.time_elapsed.to_string()),
-                        Cell::new(&format!("{}", r.status)),
-                    ]));
+                    match &j.provider {
+                        KipProviders::S3(s3) => {
+                            // Create the header row
+                            table.add_row(Row::new(vec![
+                                Cell::new("Name"),
+                                Cell::new("Bucket"),
+                                Cell::new("Region"),
+                                Cell::new("Chunks Uploaded"),
+                                Cell::new("Bytes Uploaded"),
+                                Cell::new("Run Time"),
+                                Cell::new("Status"),
+                            ]));
+                            // Add row with run info
+                            table.add_row(Row::new(vec![
+                                Cell::new(&format!("{}", &format!("{}-{}", j.name, r.id).green())),
+                                Cell::new(&s3.aws_bucket),
+                                Cell::new(&s3.aws_region),
+                                Cell::new(&format!("{}", r.files_changed.len())),
+                                Cell::new(&convert(r.bytes_uploaded as f64)),
+                                Cell::new(&r.time_elapsed.to_string()),
+                                Cell::new(&format!("{}", r.status)),
+                            ]));
+                        }
+                        KipProviders::Usb(usb) => {
+                            // Create the header row
+                            table.add_row(Row::new(vec![
+                                Cell::new("Name"),
+                                Cell::new("USB Name"),
+                                Cell::new("USB Path"),
+                                Cell::new("Chunks Uploaded"),
+                                Cell::new("Bytes Uploaded"),
+                                Cell::new("Run Time"),
+                                Cell::new("Status"),
+                            ]));
+                            // Add row with run info
+                            table.add_row(Row::new(vec![
+                                Cell::new(&format!("{}", &format!("{}-{}", j.name, r.id).green())),
+                                Cell::new(&usb.name),
+                                Cell::new(&usb.root_path.display().to_string()),
+                                Cell::new(&format!("{}", r.files_changed.len())),
+                                Cell::new(&convert(r.bytes_uploaded as f64)),
+                                Cell::new(&r.time_elapsed.to_string()),
+                                Cell::new(&format!("{}", r.status)),
+                            ]));
+                        }
+                    }
                     // Create a table for logs
                     let mut logs_table = Table::new();
                     logs_table.add_row(Row::new(vec![Cell::new("Logs")]));
