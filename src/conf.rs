@@ -37,7 +37,7 @@ pub struct KipConfOpts {
     pub os_keyring: bool,
     pub skip_hidden_files: bool,
     pub follow_symlinks: bool,
-    pub bandwidth_limit: usize,
+    pub bandwidth_limit: u64,
     pub email_notification: bool,
 }
 
