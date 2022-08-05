@@ -6,15 +6,17 @@ use aws_sdk_s3::Region;
 use chrono::prelude::*;
 use clap::Parser;
 use colored::*;
+use comfy_table::modifiers::UTF8_ROUND_CORNERS;
+use comfy_table::presets::UTF8_FULL;
+use comfy_table::*;
 use dialoguer::{theme::ColorfulTheme, Confirm, Password, Select};
 use kip::cli::{Cli, Subcommands};
 use kip::conf::KipConf;
 use kip::crypto::{keyring_get_secret, keyring_set_secret};
-use kip::job::{Job, KipFile};
+use kip::job::{Job, KipFile, KipStatus};
 use kip::providers::{s3::KipS3, usb::KipUsb, KipProviders};
 use kip::terminate;
 use pretty_bytes::converter::convert;
-use prettytable::{Cell, Row, Table};
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -676,17 +678,21 @@ fn main() {
                 let md = md.read().await;
                 // Create the table
                 let mut table = Table::new();
+                table
+                    .load_preset(UTF8_FULL)
+                    .apply_modifier(UTF8_ROUND_CORNERS)
+                    .set_content_arrangement(ContentArrangement::Dynamic);
                 if job == None && run == None {
                     // Create the header row
-                    table.add_row(Row::new(vec![
-                        Cell::new("Name"),
-                        Cell::new("ID"),
-                        Cell::new("Provider"),
-                        Cell::new("Files"),
-                        Cell::new("Total Runs"),
-                        Cell::new("Last Run"),
-                        Cell::new("Status"),
-                    ]));
+                    table.set_header(&vec![
+                        "Name",
+                        "ID",
+                        "Provider",
+                        "Files",
+                        "Total Runs",
+                        "Last Run",
+                        "Status",
+                    ]);
                     // For each job, add a row
                     for (_, j) in md.jobs.iter() {
                         let correct_last_run = if j.last_run.format("%Y-%m-%d %H:%M:%S").to_string()
@@ -702,18 +708,18 @@ fn main() {
                             KipProviders::Usb(_) => "USB",
                         };
                         // Add row with job info
-                        table.add_row(Row::new(vec![
-                            Cell::new(&format!("{}", &j.name.to_string().green())),
-                            Cell::new(&format!("{}", j.id)),
+                        table.add_row(vec![
+                            Cell::new(&j.name).fg(comfy_table::Color::Green),
+                            Cell::new(j.id),
                             Cell::new(provider),
-                            Cell::new(&format!("{}", j.files_amt)),
-                            Cell::new(&format!("{}", j.total_runs)),
-                            Cell::new(&correct_last_run),
-                            Cell::new(&j.last_status.to_string()),
-                        ]));
+                            Cell::new(j.files_amt),
+                            Cell::new(j.total_runs),
+                            Cell::new(correct_last_run),
+                            print_status(j.last_status),
+                        ]);
                     }
                     // Print the job table
-                    table.printstd();
+                    println!("{table}");
                 } else if job != None && run == None {
                     let j = md.jobs.get(job.as_ref().unwrap()).unwrap_or_else(|| {
                         terminate!(
@@ -749,61 +755,61 @@ fn main() {
                     }
                     match &j.provider {
                         KipProviders::S3(s3) => {
-                            table.add_row(Row::new(vec![
-                                Cell::new("Name"),
-                                Cell::new("ID"),
-                                Cell::new("Bucket"),
-                                Cell::new("Region"),
-                                Cell::new("Selected Files"),
-                                Cell::new("Total Runs"),
-                                Cell::new("Last Run"),
-                                Cell::new("Bytes (Provider)"),
-                                Cell::new("Status"),
-                            ]));
+                            table.set_header(&vec![
+                                "Name",
+                                "ID",
+                                "Bucket",
+                                "Region",
+                                "Selected Files",
+                                "Total Runs",
+                                "Last Run",
+                                "Bytes (Provider)",
+                                "Status",
+                            ]);
                             // Add row with job info
-                            table.add_row(Row::new(vec![
-                                Cell::new(&format!("{}", &j.name.to_string().green())),
-                                Cell::new(&format!("{}", j.id)),
+                            table.add_row(vec![
+                                Cell::new(&j.name).fg(comfy_table::Color::Green),
+                                Cell::new(j.id),
                                 Cell::new(&s3.aws_bucket),
                                 Cell::new(&s3.aws_region),
-                                Cell::new(&correct_files),
-                                Cell::new(&format!("{}", j.total_runs)),
-                                Cell::new(&correct_last_run),
-                                Cell::new(&convert(j.bytes_amt_provider as f64)),
-                                Cell::new(&format!("{}", j.last_status)),
-                            ]));
+                                Cell::new(correct_files),
+                                Cell::new(j.total_runs),
+                                Cell::new(correct_last_run),
+                                Cell::new(convert(j.bytes_amt_provider as f64)),
+                                print_status(j.last_status),
+                            ]);
                         }
                         KipProviders::Usb(usb) => {
                             // Create the header row
-                            table.add_row(Row::new(vec![
-                                Cell::new("Name"),
-                                Cell::new("ID"),
-                                Cell::new("USB Name"),
-                                Cell::new("USB Utilization"),
-                                Cell::new("USB Capacity"),
-                                Cell::new("Selected Files"),
-                                Cell::new("Total Runs"),
-                                Cell::new("Last Run"),
-                                Cell::new("Bytes (Provider)"),
-                                Cell::new("Status"),
-                            ]));
+                            table.set_header(&vec![
+                                "Name",
+                                "ID",
+                                "USB Name",
+                                "USB Utilization",
+                                "USB Capacity",
+                                "Selected Files",
+                                "Total Runs",
+                                "Last Run",
+                                "Bytes (Provider)",
+                                "Status",
+                            ]);
                             // Add row with job info
-                            table.add_row(Row::new(vec![
-                                Cell::new(&format!("{}", &j.name.to_string().green())),
-                                Cell::new(&format!("{}", j.id)),
+                            table.add_row(vec![
+                                Cell::new(&j.name).fg(comfy_table::Color::Green),
+                                Cell::new(j.id),
                                 Cell::new(&usb.name),
-                                Cell::new(&convert(usb.used_capacity as f64)),
-                                Cell::new(&convert(usb.capacity as f64)),
-                                Cell::new(&correct_files),
-                                Cell::new(&format!("{}", j.total_runs)),
-                                Cell::new(&correct_last_run),
-                                Cell::new(&convert(j.bytes_amt_provider as f64)),
-                                Cell::new(&format!("{}", j.last_status)),
-                            ]));
+                                Cell::new(convert(usb.used_capacity as f64)),
+                                Cell::new(convert(usb.capacity as f64)),
+                                Cell::new(correct_files),
+                                Cell::new(j.total_runs),
+                                Cell::new(correct_last_run),
+                                Cell::new(convert(j.bytes_amt_provider as f64)),
+                                print_status(j.last_status),
+                            ]);
                         }
                     }
                     // Print the job table
-                    table.printstd();
+                    println!("{table}");
                 } else if job != None && run != None {
                     let j = md.jobs.get(job.as_ref().unwrap()).unwrap_or_else(|| {
                         terminate!(
@@ -825,66 +831,74 @@ fn main() {
                     match &j.provider {
                         KipProviders::S3(s3) => {
                             // Create the header row
-                            table.add_row(Row::new(vec![
-                                Cell::new("Name"),
-                                Cell::new("Bucket"),
-                                Cell::new("Region"),
-                                Cell::new("Chunks Uploaded"),
-                                Cell::new("Bytes Uploaded"),
-                                Cell::new("Run Time"),
-                                Cell::new("Status"),
-                            ]));
+                            table.set_header(&vec![
+                                "Name",
+                                "Bucket",
+                                "Region",
+                                "Chunks Uploaded",
+                                "Bytes Uploaded",
+                                "Run Time",
+                                "Status",
+                            ]);
                             // Add row with run info
-                            table.add_row(Row::new(vec![
-                                Cell::new(&format!("{}", &format!("{}-{}", j.name, r.id).green())),
+                            table.add_row(vec![
+                                Cell::new(format!("{}-{}", j.name, r.id))
+                                    .fg(comfy_table::Color::Green),
                                 Cell::new(&s3.aws_bucket),
                                 Cell::new(&s3.aws_region),
-                                Cell::new(&format!("{}", r.files_changed.len())),
-                                Cell::new(&convert(r.bytes_uploaded as f64)),
-                                Cell::new(&r.time_elapsed.to_string()),
-                                Cell::new(&format!("{}", r.status)),
-                            ]));
+                                Cell::new(r.files_changed.len()),
+                                Cell::new(convert(r.bytes_uploaded as f64)),
+                                Cell::new(&r.time_elapsed),
+                                print_status(r.status),
+                            ]);
                         }
                         KipProviders::Usb(usb) => {
                             // Create the header row
-                            table.add_row(Row::new(vec![
-                                Cell::new("Name"),
-                                Cell::new("USB Name"),
-                                Cell::new("USB Path"),
-                                Cell::new("Chunks Uploaded"),
-                                Cell::new("Bytes Uploaded"),
-                                Cell::new("Run Time"),
-                                Cell::new("Status"),
-                            ]));
+                            table.set_header(&vec![
+                                "Name",
+                                "USB Name",
+                                "USB Path",
+                                "Chunks Uploaded",
+                                "Bytes Uploaded",
+                                "Run Time",
+                                "Status",
+                            ]);
                             // Add row with run info
-                            table.add_row(Row::new(vec![
-                                Cell::new(&format!("{}", &format!("{}-{}", j.name, r.id).green())),
+                            table.add_row(vec![
+                                Cell::new(format!("{}-{}", j.name, r.id))
+                                    .fg(comfy_table::Color::Green),
                                 Cell::new(&usb.name),
-                                Cell::new(&usb.root_path.display().to_string()),
-                                Cell::new(&format!("{}", r.files_changed.len())),
-                                Cell::new(&convert(r.bytes_uploaded as f64)),
-                                Cell::new(&r.time_elapsed.to_string()),
-                                Cell::new(&format!("{}", r.status)),
-                            ]));
+                                Cell::new(usb.root_path.display().to_string()),
+                                Cell::new(r.files_changed.len()),
+                                Cell::new(convert(r.bytes_uploaded as f64)),
+                                Cell::new(&r.time_elapsed),
+                                print_status(r.status),
+                            ]);
                         }
                     }
                     // Create a table for logs
                     let mut logs_table = Table::new();
-                    logs_table.add_row(Row::new(vec![Cell::new("Logs")]));
+                    logs_table
+                        .load_preset(UTF8_FULL)
+                        .apply_modifier(UTF8_ROUND_CORNERS)
+                        .set_content_arrangement(ContentArrangement::Dynamic);
+                    logs_table.set_header(&vec!["Logs"]);
                     // Pretty print logs
                     let mut pretty_logs = String::new();
-                    for l in r.logs.iter() {
+                    for (i, l) in r.logs.iter().enumerate() {
                         pretty_logs.push_str(l);
-                        pretty_logs.push('\n');
+                        if i != r.logs.len() - 1 {
+                            pretty_logs.push('\n');
+                        }
                     }
                     if pretty_logs.is_empty() {
                         pretty_logs.push_str("None");
                     }
                     // Add row to logs table
-                    logs_table.add_row(Row::new(vec![Cell::new(&pretty_logs)]));
+                    logs_table.add_row(vec![pretty_logs]);
                     // Print the job table
-                    table.printstd();
-                    logs_table.printstd();
+                    println!("{table}");
+                    println!("{logs_table}");
                 }
             }
 
@@ -938,4 +952,14 @@ fn confirm_secret(job_name: &str) -> String {
         terminate!(1, "{} incorrect secret.", "[ERR]".red());
     };
     secret
+}
+
+fn print_status(status: KipStatus) -> comfy_table::Cell {
+    match status {
+        KipStatus::OK => Cell::new("OK").fg(comfy_table::Color::Green),
+        KipStatus::ERR => Cell::new("ERR").fg(comfy_table::Color::Red),
+        KipStatus::WARN => Cell::new("WARN").fg(comfy_table::Color::Yellow),
+        KipStatus::IN_PROGRESS => Cell::new("IN_PROGRESS").fg(comfy_table::Color::Cyan),
+        KipStatus::NEVER_RUN => Cell::new("NEVER_RUN").add_attribute(Attribute::Bold),
+    }
 }
