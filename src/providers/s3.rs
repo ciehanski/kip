@@ -73,7 +73,7 @@ impl KipProvider for KipS3 {
                 .put_object()
                 .bucket(self.aws_bucket.clone())
                 .key(format!("{}/chunks/{}.chunk", job_id, chunk.hash))
-                .content_length(encrypted.len() as i64)
+                .content_length(ce_bytes_len.try_into()?)
                 .body(ByteStream::from(encrypted))
                 .send()
                 .await?;
