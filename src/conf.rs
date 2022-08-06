@@ -15,6 +15,9 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+const KIP_CONF: &str = "kip.toml";
+const KIP_METADATA: &str = "kip_metadata.json";
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct KipConf {
     /// Uses TOML
@@ -75,12 +78,12 @@ impl KipConf {
     /// macOS:   /Users/Alice/Library/Application Support/com.ciehanski.kip
     pub fn new() -> Result<(KipConfArc, KipConfMetadataArc)> {
         if let Some(proj_dirs) = ProjectDirs::from("com", "ciehanski", "kip") {
-            if proj_dirs.config_dir().join("kip.toml").exists() {
+            if proj_dirs.config_dir().join(KIP_CONF).exists() {
                 // If kip configuration already exists, read and return it
-                let kc_file = read(proj_dirs.config_dir().join("kip.toml"))?;
+                let kc_file = read(proj_dirs.config_dir().join(KIP_CONF))?;
                 let kc: KipConf = toml::from_slice(&kc_file)?;
-                if proj_dirs.config_dir().join("kip_metadata.json").exists() {
-                    let md_file = read(proj_dirs.config_dir().join("kip_metadata.json"))?;
+                if proj_dirs.config_dir().join(KIP_METADATA).exists() {
+                    let md_file = read(proj_dirs.config_dir().join(KIP_METADATA))?;
                     let md = serde_json::from_slice(&md_file)?;
                     return Ok((Arc::new(kc), Arc::new(RwLock::new(md))));
                 }
@@ -93,13 +96,13 @@ impl KipConf {
             // Create new default kip config
             let default_conf = KipConf::default();
             // Write default config to $PROJECT_DIR/kip.toml
-            let mut conf_file = File::create(proj_dirs.config_dir().join("kip.toml"))?;
+            let mut conf_file = File::create(proj_dirs.config_dir().join(KIP_CONF))?;
             let toml_conf = toml::to_string_pretty(&default_conf)?;
             conf_file.write_all(toml_conf.as_bytes())?;
             // Create new default kip metadata
             let default_metadata = KipConfMetadata::default();
             // Write default metadata to $PROJECT_DIR/kip_metadata.json
-            let mut metadata_file = File::create(proj_dirs.config_dir().join("kip_metadata.json"))?;
+            let mut metadata_file = File::create(proj_dirs.config_dir().join(KIP_METADATA))?;
             let json_metadata = serde_json::to_string_pretty(&default_metadata)?;
             metadata_file.write_all(json_metadata.as_bytes())?;
             Ok((
@@ -123,7 +126,7 @@ impl KipConfMetadata {
         if let Some(proj_dirs) = ProjectDirs::from("com", "ciehanski", "kip") {
             let mut file = OpenOptions::new()
                 .write(true)
-                .open(proj_dirs.config_dir().join("kip_metadata.json"))?;
+                .open(proj_dirs.config_dir().join(KIP_METADATA))?;
             let json_conf = serde_json::to_string_pretty(&self)?;
             // Overwrite the metadata file
             file.set_len(0)?;
