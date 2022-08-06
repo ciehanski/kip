@@ -157,14 +157,21 @@ impl Job {
                 if chunk.local_path == fpath {
                     let chunk_path = format!("{}/chunks/{}.chunk", self.id, chunk.hash);
                     // Delete
-                    self.provider.s3().unwrap().delete(&chunk_path).await?;
+                    match &self.provider {
+                        KipProviders::S3(s3) => {
+                            s3.delete(&chunk_path).await?;
+                        }
+                        KipProviders::Usb(usb) => {
+                            usb.delete(&chunk_path).await?;
+                        }
+                    };
                 }
             }
         }
         // Reset AWS env env to nil
         zeroize_s3_env_vars();
         // Set job metadata
-        self.bytes_amt_provider -= std::fs::metadata(fpath)?.len();
+        self.bytes_amt_provider -= metadata(fpath)?.len();
         Ok(())
     }
 
@@ -197,8 +204,7 @@ impl Job {
             // File
             if metadata(&f.path)?.is_file() {
                 let c = tokio::fs::read(&f.path).await?;
-                let digest = hex_digest(Algorithm::SHA256, &c);
-                f.hash = digest;
+                f.hash = hex_digest(Algorithm::SHA256, &c);
             } else {
                 // Directory
                 for entry in WalkDir::new(&f.path) {
@@ -207,8 +213,7 @@ impl Job {
                         continue;
                     }
                     let c = tokio::fs::read(&entry.path()).await?;
-                    let digest = hex_digest(Algorithm::SHA256, &c);
-                    f.hash = digest;
+                    f.hash = hex_digest(Algorithm::SHA256, &c);
                 }
             }
         }
