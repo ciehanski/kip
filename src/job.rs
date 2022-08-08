@@ -90,12 +90,12 @@ impl Job {
                     self.first_run = Utc::now();
                 }
                 // Reset AWS env to nil
-                zeroize_s3_env_vars();
+                self.zeroize_s3_env_vars();
                 bail!("{}.", e)
             }
         };
         // Reset AWS env to nil
-        zeroize_s3_env_vars();
+        self.zeroize_s3_env_vars();
         // Set job status
         self.last_status = r.status;
         // Print all logs from run
@@ -134,7 +134,7 @@ impl Job {
                 Ok(_) => (),
                 Err(e) => {
                     // Reset AWS env to nil
-                    zeroize_s3_env_vars();
+                    self.zeroize_s3_env_vars();
                     bail!("{}.", e)
                 }
             };
@@ -142,7 +142,7 @@ impl Job {
             bail!("couldn't find run {}.", run)
         }
         // Reset AWS env to nil
-        zeroize_s3_env_vars();
+        self.zeroize_s3_env_vars();
         // Success
         Ok(())
     }
@@ -169,7 +169,7 @@ impl Job {
             }
         }
         // Reset AWS env env to nil
-        zeroize_s3_env_vars();
+        self.zeroize_s3_env_vars();
         // Set job metadata
         self.bytes_amt_provider -= metadata(fpath)?.len();
         Ok(())
@@ -221,16 +221,21 @@ impl Job {
     }
 
     fn set_s3_env_vars(&self) -> Result<()> {
-        let s3acc = keyring_get_secret(&format!("com.ciehanski.kip.{}.s3acc", self.name))
-            .context("couldnt get s3acc from keyring")?;
-        let s3acc = s3acc.trim_end();
-        let s3sec = keyring_get_secret(&format!("com.ciehanski.kip.{}.s3sec", self.name))
-            .context("couldn't get s3sec from keyring")?;
-        let s3sec = s3sec.trim_end();
-        // Set AWS env vars to user's keys
-        env::set_var("AWS_ACCESS_KEY_ID", s3acc);
-        env::set_var("AWS_SECRET_ACCESS_KEY", s3sec);
-        env::set_var("AWS_REGION", &self.provider.s3().unwrap().aws_region);
+        match &self.provider {
+            KipProviders::S3(s3) => {
+                let s3acc = keyring_get_secret(&format!("com.ciehanski.kip.{}.s3acc", self.name))
+                    .context("couldnt get s3acc from keyring")?;
+                let s3acc = s3acc.trim_end();
+                let s3sec = keyring_get_secret(&format!("com.ciehanski.kip.{}.s3sec", self.name))
+                    .context("couldn't get s3sec from keyring")?;
+                let s3sec = s3sec.trim_end();
+                // Set AWS env vars to user's keys
+                env::set_var("AWS_ACCESS_KEY_ID", s3acc);
+                env::set_var("AWS_SECRET_ACCESS_KEY", s3sec);
+                env::set_var("AWS_REGION", &s3.aws_region);
+            }
+            _ => {}
+        }
         Ok(())
     }
 
@@ -238,24 +243,28 @@ impl Job {
         let job_secret = keyring_get_secret(&format!("com.ciehanski.kip.{}", self.name))
             .context("couldnt get job secret from keyring")?;
         let job_secret = job_secret.trim_end();
-        let s3acc = keyring_get_secret(&format!("com.ciehanski.kip.{}.s3acc", self.name))
-            .context("couldnt get s3acc from keyring")?;
-        let s3acc = s3acc.trim_end();
-        let s3sec = keyring_get_secret(&format!("com.ciehanski.kip.{}.s3sec", self.name))
-            .context("couldn't get s3sec from keyring")?;
-        let s3sec = s3sec.trim_end();
-        keyring_delete_secret(s3acc)?;
-        keyring_delete_secret(s3sec)?;
         keyring_delete_secret(job_secret)?;
+        if self.provider.is_s3() {
+            let s3acc = keyring_get_secret(&format!("com.ciehanski.kip.{}.s3acc", self.name))
+                .context("couldnt get s3acc from keyring")?;
+            let s3acc = s3acc.trim_end();
+            let s3sec = keyring_get_secret(&format!("com.ciehanski.kip.{}.s3sec", self.name))
+                .context("couldn't get s3sec from keyring")?;
+            let s3sec = s3sec.trim_end();
+            keyring_delete_secret(s3acc)?;
+            keyring_delete_secret(s3sec)?;
+        }
         Ok(())
     }
-}
 
-// Reset AWS env vars to nil
-fn zeroize_s3_env_vars() {
-    env::set_var("AWS_ACCESS_KEY_ID", "");
-    env::set_var("AWS_SECRET_ACCESS_KEY", "");
-    env::set_var("AWS_REGION", "");
+    /// Reset AWS env vars to nil
+    pub fn zeroize_s3_env_vars(&self) {
+        if self.provider.is_s3() {
+            env::set_var("AWS_ACCESS_KEY_ID", "");
+            env::set_var("AWS_SECRET_ACCESS_KEY", "");
+            env::set_var("AWS_REGION", "");
+        }
+    }
 }
 
 #[allow(non_camel_case_types)]
