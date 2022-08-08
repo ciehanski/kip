@@ -2,13 +2,12 @@
 // Copyright (c) 2022 Ryan Ciehanski <ryan@ciehanski.com>
 //
 
-use aead::{Aead, NewAead};
+use aead::{Aead, KeyInit};
 use anyhow::{bail, Context, Result};
 use argon2::{self, Config, ThreadMode, Variant, Version};
 use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
 use keyring::Entry;
-use rand::rngs::OsRng;
-use rand::Rng;
+use rand::{rngs::OsRng, Rng};
 use std::collections::VecDeque;
 use zeroize::Zeroize;
 
