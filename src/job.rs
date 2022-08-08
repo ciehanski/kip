@@ -221,20 +221,17 @@ impl Job {
     }
 
     fn set_s3_env_vars(&self) -> Result<()> {
-        match &self.provider {
-            KipProviders::S3(s3) => {
-                let s3acc = keyring_get_secret(&format!("com.ciehanski.kip.{}.s3acc", self.name))
-                    .context("couldnt get s3acc from keyring")?;
-                let s3acc = s3acc.trim_end();
-                let s3sec = keyring_get_secret(&format!("com.ciehanski.kip.{}.s3sec", self.name))
-                    .context("couldn't get s3sec from keyring")?;
-                let s3sec = s3sec.trim_end();
-                // Set AWS env vars to user's keys
-                env::set_var("AWS_ACCESS_KEY_ID", s3acc);
-                env::set_var("AWS_SECRET_ACCESS_KEY", s3sec);
-                env::set_var("AWS_REGION", &s3.aws_region);
-            }
-            _ => {}
+        if let KipProviders::S3(s3) = &self.provider {
+            let s3acc = keyring_get_secret(&format!("com.ciehanski.kip.{}.s3acc", self.name))
+                .context("couldnt get s3acc from keyring")?;
+            let s3acc = s3acc.trim_end();
+            let s3sec = keyring_get_secret(&format!("com.ciehanski.kip.{}.s3sec", self.name))
+                .context("couldn't get s3sec from keyring")?;
+            let s3sec = s3sec.trim_end();
+            // Set AWS env vars to user's keys
+            env::set_var("AWS_ACCESS_KEY_ID", s3acc);
+            env::set_var("AWS_SECRET_ACCESS_KEY", s3sec);
+            env::set_var("AWS_REGION", &s3.aws_region);
         }
         Ok(())
     }
