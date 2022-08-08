@@ -1484,7 +1484,6 @@ dependencies = [
  "linya",
  "memmap2",
  "num_cpus",
- "pavao",
  "pretty-bytes",
  "rand",
  "rust-argon2",
@@ -1813,19 +1812,6 @@ dependencies = [
  "redox_syscall",
  "smallvec",
  "windows-sys",
-]
-
-[[package]]
-name = "pavao"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a51a966a8b169575917ba1dd9fc49cf03997a639f1ada205931e01623f8e2c32"
-dependencies = [
- "lazy_static",
- "libc",
- "log",
- "pkg-config",
- "thiserror",
 ]
 
 [[package]]
