@@ -13,8 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
 use std::fmt::{Debug, Display};
-use std::fs::metadata;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 use walkdir::WalkDir;
 
@@ -119,7 +118,6 @@ impl Job {
         } else {
             println!("{} no file changes detected.", "[INFO]".yellow());
         }
-        // Success
         Ok(())
     }
 
@@ -150,7 +148,7 @@ impl Job {
     pub async fn purge_file(&mut self, f: &str) -> Result<()> {
         // Find all the runs that contain this file's chunks
         // and remove them from S3.
-        let fpath = PathBuf::from(&f).canonicalize()?;
+        let fpath = Path::new(&f).canonicalize()?;
         self.set_s3_env_vars()?;
         for run in self.runs.iter() {
             for chunk in run.1.files_changed.iter() {
@@ -171,7 +169,7 @@ impl Job {
         // Reset AWS env env to nil
         self.zeroize_s3_env_vars();
         // Set job metadata
-        self.bytes_amt_provider -= metadata(fpath)?.len();
+        self.bytes_amt_provider -= fpath.metadata()?.len();
         Ok(())
     }
 
@@ -202,7 +200,7 @@ impl Job {
     async fn get_file_hashes(&mut self) -> Result<()> {
         for f in self.files.iter_mut() {
             // File
-            if metadata(&f.path)?.is_file() {
+            if f.path.metadata()?.is_file() {
                 let c = tokio::fs::read(&f.path).await?;
                 f.hash = hex_digest(Algorithm::SHA256, &c);
             } else {
@@ -265,7 +263,7 @@ impl Job {
 }
 
 #[allow(non_camel_case_types)]
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum KipStatus {
     OK,
     ERR,
@@ -286,7 +284,7 @@ impl Display for KipStatus {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct KipFile {
     pub path: PathBuf,
     pub hash: String,

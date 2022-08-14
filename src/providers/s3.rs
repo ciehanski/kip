@@ -14,8 +14,9 @@ use linya::{Bar, Progress};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio::io::AsyncReadExt;
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -82,10 +83,7 @@ impl KipProvider for KipS3 {
             chunks.push(chunk);
             // Increment progress bar for this file by one
             // since one chunk was uploaded
-            progress
-                .lock()
-                .unwrap()
-                .inc_and_draw(bar, chunk_bytes.len());
+            progress.lock().await.inc_and_draw(bar, chunk_bytes.len());
             let ce_bytes_len_u64: u64 = ce_bytes_len.try_into()?;
             bytes_uploaded += ce_bytes_len_u64;
         }

@@ -15,13 +15,13 @@ use humantime::format_duration;
 use linya::{Bar, Progress};
 use memmap2::MmapOptions;
 use serde::{Deserialize, Serialize};
-use std::fs::{create_dir_all, metadata, File, Metadata, OpenOptions};
+use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::prelude::*;
-use std::io::SeekFrom;
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::io::{SeekFrom, Write};
+use std::path::Path;
+use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::Mutex;
 use walkdir::WalkDir;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -38,7 +38,7 @@ pub struct Run {
 
 impl Run {
     pub fn new(id: u64) -> Self {
-        Run {
+        Self {
             id,
             started: Utc.ymd(1970, 1, 1).and_hms(0, 0, 0),
             time_elapsed: String::from("0d 0h 0m 0s"),
@@ -68,7 +68,7 @@ impl Run {
         self.started = Utc::now();
         self.status = KipStatus::IN_PROGRESS;
         let started = self.started;
-        let mut warn: usize = 0;
+        let mut warn: u64 = 0;
         let bytes_uploaded: Arc<Mutex<u64>> = Arc::new(Mutex::new(0));
         let err = Arc::new(Mutex::new(Vec::<String>::new()));
         let upload_logs = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -81,7 +81,7 @@ impl Run {
             // Check if file is excluded
             if !job.excluded_files.is_empty() {
                 for fe in job.excluded_files.iter() {
-                    if PathBuf::from(fe).canonicalize().unwrap() == kf.path {
+                    if fe.canonicalize()? == kf.path {
                         warn += 1;
                         let log = format!(
                             "[{}] {}-{} ⇉ '{}' is excluded from backups.",
@@ -100,14 +100,29 @@ impl Run {
             // Check if file type is excluded
             if !job.excluded_file_types.is_empty() {
                 for fte in job.excluded_file_types.iter() {
-                    if fte == kf.path.extension().unwrap().to_str().unwrap() {
+                    if let Some(ext) = kf.path.extension() {
+                        let ext = ext.to_str().unwrap_or_default();
+                        if fte == ext {
+                            warn += 1;
+                            let log = format!(
+                                "[{}] {}-{} ⇉ '{}' file types are excluded from this backup.",
+                                Utc::now().format("%Y-%m-%d %H:%M:%S"),
+                                job.name,
+                                self.id,
+                                fte,
+                            );
+                            self.logs.push(log.clone());
+                            println!("{}", log);
+                            continue;
+                        }
+                    } else {
                         warn += 1;
                         let log = format!(
-                            "[{}] {}-{} ⇉ '{}' files are excluded from backups.",
+                            "[{}] {}-{} ⇉ unable to detect file extension for '{}'.",
                             Utc::now().format("%Y-%m-%d %H:%M:%S"),
                             job.name,
                             self.id,
-                            fte,
+                            kf.path.display(),
                         );
                         self.logs.push(log.clone());
                         println!("{}", log);
@@ -132,7 +147,7 @@ impl Run {
             }
 
             // Check if f is file or directory
-            let fmd = metadata(&kf.path)?;
+            let fmd = kf.path.metadata()?;
             if fmd.is_file() {
                 // Clones for future dispatch for this file
                 let progress = Arc::clone(&progress);
@@ -147,14 +162,17 @@ impl Run {
 
                 // Create the spawned future for this file
                 let upload_file_future = tokio::task::spawn(async move {
-                    match run.start_inner(&kf, &fmd, job, &secret, progress).await {
+                    match run
+                        .start_inner(&kf, fmd.len(), job, &secret, progress)
+                        .await
+                    {
                         Ok((logs, mut fc, bu)) => {
-                            upload_logs_arc.lock().unwrap().push(logs);
-                            changed_file_chunks_arc.lock().unwrap().append(&mut fc);
-                            *bytes_uploaded_arc.lock().unwrap() += bu;
+                            upload_logs_arc.lock().await.push(logs);
+                            changed_file_chunks_arc.lock().await.append(&mut fc);
+                            *bytes_uploaded_arc.lock().await += bu;
                         }
                         Err(e) => {
-                            err_arc.lock().unwrap().push(e.to_string());
+                            err_arc.lock().await.push(e.to_string());
                         }
                     };
                 });
@@ -172,7 +190,7 @@ impl Run {
 
                     // If a directory, skip since upload will
                     // create the parent folder by default
-                    let fmd = metadata(entry.path())?;
+                    let fmd = entry.path().metadata()?;
                     if fmd.is_dir() {
                         continue;
                     }
@@ -190,16 +208,16 @@ impl Run {
                     // Create the spawned future for this file
                     let upload_dir_file_future = tokio::task::spawn(async move {
                         match run
-                            .start_inner(&entry_kf, &fmd, job, &secret, progress)
+                            .start_inner(&entry_kf, fmd.len(), job, &secret, progress)
                             .await
                         {
                             Ok((logs, mut fc, bu)) => {
-                                upload_logs_arc.lock().unwrap().push(logs);
-                                changed_file_chunks_arc.lock().unwrap().append(&mut fc);
-                                *bytes_uploaded_arc.lock().unwrap() += bu;
+                                upload_logs_arc.lock().await.push(logs);
+                                changed_file_chunks_arc.lock().await.append(&mut fc);
+                                *bytes_uploaded_arc.lock().await += bu;
                             }
                             Err(e) => {
-                                err_arc.lock().unwrap().push(e.to_string());
+                                err_arc.lock().await.push(e.to_string());
                             }
                         };
                     });
@@ -218,18 +236,18 @@ impl Run {
         self.finished = Utc::now();
         let dur = self.finished.signed_duration_since(started).to_std()?;
         self.time_elapsed = format_duration(dur).to_string();
-        self.bytes_uploaded = *bytes_uploaded.lock().unwrap();
-        self.logs.extend_from_slice(&*upload_logs.lock().unwrap());
+        self.bytes_uploaded = *bytes_uploaded.lock().await;
+        self.logs.extend_from_slice(&*upload_logs.lock().await);
         self.files_changed
-            .append(&mut *changed_file_chunks.lock().unwrap());
-        let err = &*err.lock().unwrap();
+            .append(&mut *changed_file_chunks.lock().await);
+        let err = &*err.lock().await;
         if err.is_empty() && warn == 0 {
             self.status = KipStatus::OK;
         } else if warn > 0 && err.is_empty() {
             self.status = KipStatus::WARN;
         } else {
             self.status = KipStatus::ERR;
-            for e in &*err {
+            for e in &**err {
                 eprintln!("{}", e);
             }
         }
@@ -243,14 +261,13 @@ impl Run {
         );
         self.logs.push(fin_log.clone());
         println!("{}", fin_log);
-
         Ok(())
     }
 
     async fn start_inner(
         &mut self,
         f: &KipFile,
-        fmd: &Metadata,
+        file_len: u64,
         job: Job,
         secret: &str,
         progress: Arc<Mutex<Progress>>,
@@ -260,7 +277,7 @@ impl Run {
         // Before opening file, determine how large it is
         // If larger than 500 MB, mmap the sucker, if not, just read it
         let mut file = vec![];
-        if fmd.len() > (500 * 1024 * 1024) {
+        if file_len > (500 * 1024 * 1024) {
             // SAFETY: unsafe used here for mmap
             let mmap = unsafe { MmapOptions::new().populate().map(&File::open(&f.path)?)? };
             file.extend_from_slice(&mmap[..]);
@@ -271,8 +288,8 @@ impl Run {
         // Check if all file chunks are already in S3
         // to avoid overwite and needless upload
         let chunks_map = chunk_file(&file);
-        let bar: Bar = progress.lock().unwrap().bar(
-            fmd.len() as usize,
+        let bar: Bar = progress.lock().await.bar(
+            file_len.try_into()?,
             format!(
                 "{}-{} ⇉ uploading '{}'",
                 job.name,
@@ -281,22 +298,25 @@ impl Run {
             ),
         );
 
-        let mut chunks_missing: usize = 0;
-        let mut bytes_uploaded: u64 = 0;
+        let mut chunks_missing: u64 = 0;
         for (chunk, _) in chunks_map.iter() {
-            let chunk_in_s3 = job
-                .provider
-                .s3()
-                .unwrap()
-                .contains(job.id, &chunk.hash)
-                .await?;
-            if !chunk_in_s3 {
-                chunks_missing += 1;
-            };
+            match &job.provider {
+                KipProviders::S3(s3) => {
+                    if !s3.contains(job.id, &chunk.hash).await? {
+                        chunks_missing += 1;
+                    };
+                }
+                KipProviders::Usb(usb) => {
+                    if !usb.contains(job.id, &chunk.hash).await? {
+                        chunks_missing += 1;
+                    };
+                }
+            }
         }
 
         // If hash is the same and no chunks are missing from S3
         // skip uploading this file
+        let mut bytes_uploaded: u64 = 0;
         let hash_ok = f.hash == hex_digest(Algorithm::SHA256, &file);
         if hash_ok && chunks_missing == 0 {
             let log = format!(
@@ -334,7 +354,7 @@ impl Run {
                             // this chunk has not been modified, skip it
                             if !chunked_file.is_empty() {
                                 // Increase bytes uploaded for this run
-                                bytes_uploaded += bu as u64;
+                                bytes_uploaded += bu;
                                 // Push chunks onto run's changed files
                                 for c in chunked_file {
                                     files_changed.push(c);
@@ -360,21 +380,56 @@ impl Run {
                                 f.path.display().to_string().red(),
                                 e,
                             );
-                            progress_cancel.lock().unwrap().cancel(bar);
+                            progress_cancel.lock().await.cancel(bar);
                         }
                     };
                 }
                 KipProviders::Usb(usb) => {
-                    // TODO: fully implement later on
-                    usb.upload(
-                        &f.path.canonicalize()?,
-                        chunks_map,
-                        job.id,
-                        secret,
-                        progress,
-                        &bar,
-                    )
-                    .await?;
+                    match usb
+                        .upload(
+                            &f.path.canonicalize()?,
+                            chunks_map,
+                            job.id,
+                            secret,
+                            progress,
+                            &bar,
+                        )
+                        .await
+                    {
+                        Ok((chunked_file, bu)) => {
+                            // Confirm the chunked file is not empty AKA
+                            // this chunk has not been modified, skip it
+                            if !chunked_file.is_empty() {
+                                // Increase bytes uploaded for this run
+                                bytes_uploaded += bu;
+                                // Push chunks onto run's changed files
+                                for c in chunked_file {
+                                    files_changed.push(c);
+                                }
+                                // Push logs
+                                file_upload_log = format!(
+                                    "[{}] {}-{} ⇉ '{}' uploaded successfully to '{}'.",
+                                    Utc::now().format("%Y-%m-%d %H:%M:%S"),
+                                    job.name,
+                                    self.id,
+                                    f.path.display().to_string().green(),
+                                    usb.name,
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            // Push logs
+                            file_upload_log = format!(
+                                "[{}] {}-{} ⇉ '{}' upload failed: {}.",
+                                Utc::now().format("%Y-%m-%d %H:%M:%S"),
+                                job.name,
+                                self.id,
+                                f.path.display().to_string().red(),
+                                e,
+                            );
+                            progress_cancel.lock().await.cancel(bar);
+                        }
+                    };
                 }
             }
         }
@@ -388,16 +443,15 @@ impl Run {
             job.name,
             self.id,
         );
+
         // Confirm files_changed is not nil
         if self.files_changed.is_empty() {
             bail!("nothing to restore, no files were changed on this run.")
         }
-        let dmd = metadata(&output_folder)?;
-        if !dmd.is_dir() || output_folder.is_empty() {
-            bail!("path provided is not a directory.")
-        }
+
         // Get all bucket contents
         let bucket_objects = job.provider.s3().unwrap().list_all(job.id).await?;
+
         // For each object in the bucket, download it
         let mut counter: usize = 0;
         'files: for fc in self.files_changed.iter() {
@@ -408,8 +462,8 @@ impl Run {
             's3: for ob in bucket_objects.iter() {
                 let s3_key = match &ob.key {
                     Some(k) => k,
-                    _ => {
-                        bail!("unable to get bucket object's S3 path.")
+                    None => {
+                        continue 's3;
                     }
                 };
                 // Strip the hash from S3 key
@@ -444,8 +498,7 @@ impl Run {
                             } else {
                                 // If a multi-chunk file pass to multi-chunk vec
                                 // for re-assembly after loop finishes
-                                // TODO: I don't like chunk_bytes.clone() here
-                                multi_chunks.push((fc, chunk_bytes.clone()));
+                                multi_chunks.push((fc, chunk_bytes));
                             }
                         }
                         Err(e) => {
@@ -463,6 +516,7 @@ impl Run {
                     }
                 }
             }
+
             // Only run if multi_chunks is not empty
             if !multi_chunks.is_empty() {
                 // Here, we sort all the chunks by thier offset and
@@ -536,37 +590,30 @@ fn create_file(path: &Path, output_folder: &str) -> Result<File> {
         correct_chunk_path = path.strip_prefix("/")?;
     }
     let folder_path = Path::new(&output_folder).join(correct_chunk_path);
-    let folder_parent = match folder_path.parent() {
-        Some(p) => p,
-        _ => &folder_path,
-    };
+    let folder_parent = folder_path.parent().unwrap_or(&folder_path);
     create_dir_all(folder_parent)?;
     // Create the file
-    let cfile = if !Path::new(&output_folder).join(correct_chunk_path).exists() {
-        File::create(Path::new(&output_folder).join(correct_chunk_path))?
+    let cfile = if !folder_path.exists() {
+        File::create(folder_path)?
     } else {
-        OpenOptions::new()
-            .write(true)
-            .open(Path::new(&output_folder).join(correct_chunk_path))?
+        OpenOptions::new().write(true).open(folder_path)?
     };
     Ok(cfile)
 }
 
 pub fn strip_hash_from_s3(s3_path: &str) -> Result<String> {
     // Pop hash off from S3 path
-    let mut fp: Vec<_> = s3_path.split('/').collect();
-    let hdt = match fp.pop() {
-        Some(h) => h,
-        _ => {
-            bail!("failed to pop chunk's S3 path.")
-        }
-    };
-    // Split the chunk. Ex: 902938470293847392033874592038473.chunk
-    let hs: Vec<_> = hdt.split('.').collect();
-    // Just grab the first split, which is the hash
-    let hash = hs[0].to_string();
-    // Ship it
-    Ok(hash)
+    let mut fp: Vec<&str> = s3_path.split('/').collect();
+    if let Some(hdt) = fp.pop() {
+        // Split the chunk. Ex: 902938470293847392033874592038473.chunk
+        let hs: Vec<&str> = hdt.split('.').collect();
+        // Just grab the first split, which is the hash
+        let hash = hs[0].to_string();
+        // Ship it
+        Ok(hash)
+    } else {
+        bail!("failed to pop chunk's S3 path.")
+    }
 }
 
 pub async fn compress(bytes: &[u8]) -> Result<Vec<u8>> {

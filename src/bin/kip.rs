@@ -567,13 +567,17 @@ fn main() {
                 // Confirm correct secret from user input
                 let secret = confirm_secret(&j.name);
                 // Get output folder
-                let output_folder = match output_folder {
-                    Some(p) => p,
-                    _ => {
-                        let wd = std::env::current_dir().unwrap();
-                        wd.display().to_string()
-                    }
-                };
+                let output_folder = output_folder.unwrap_or_else(|| {
+                    terminate!(2, "{} invalid output folder provided.", "[ERR]".red());
+                });
+                let dmd = std::fs::metadata(&output_folder).unwrap();
+                if !dmd.is_dir() || output_folder.is_empty() {
+                    terminate!(
+                        2,
+                        "{} output folder provided is not a valid directory.",
+                        "[ERR]".red()
+                    );
+                }
                 // Run the restore
                 match j.start_restore(run, &secret, &output_folder).await {
                     Ok(_) => {

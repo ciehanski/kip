@@ -12,11 +12,12 @@ use linya::{Bar, Progress};
 use memmap2::MmapOptions;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fs::{create_dir_all, metadata};
+use std::fs::create_dir_all;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::Mutex;
 use uuid::Uuid;
 use walkdir::WalkDir;
 
@@ -96,10 +97,7 @@ impl KipProvider for KipUsb {
             chunks.push(chunk);
             // Increment progress bar for this file by one
             // since one chunk was uploaded
-            progress
-                .lock()
-                .unwrap()
-                .inc_and_draw(bar, chunk_bytes.len());
+            progress.lock().await.inc_and_draw(bar, chunk_bytes.len());
             let ce_bytes_len_u64: u64 = ce_bytes_len.try_into()?;
             bytes_uploaded += ce_bytes_len_u64;
         }
@@ -109,9 +107,8 @@ impl KipProvider for KipUsb {
     async fn download(&self, f: &str, secret: &str) -> Result<Vec<u8>> {
         // Read result from S3 and convert to bytes
         let path = Path::new(f);
-        let fmd = metadata(path)?;
         let mut bytes = vec![];
-        if fmd.len() > (500 * 1024 * 1024) {
+        if path.metadata()?.len() > (500 * 1024 * 1024) {
             // SAFETY: unsafe used here for mmap
             let mmap = unsafe {
                 MmapOptions::new()
@@ -166,8 +163,7 @@ impl KipProvider for KipUsb {
         for entry in WalkDir::new(path).follow_links(true) {
             let entry = entry?;
             // If a directory, skip
-            let fmd = metadata(entry.path())?;
-            if fmd.is_dir() {
+            if entry.path().metadata()?.is_dir() {
                 continue;
             }
             // Is a file, create KipFile and pusht to vec

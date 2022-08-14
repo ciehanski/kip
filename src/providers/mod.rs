@@ -3,6 +3,7 @@
 //
 
 pub mod s3;
+// pub mod smb;
 pub mod usb;
 
 use crate::chunk::FileChunk;
@@ -14,7 +15,8 @@ use linya::{Bar, Progress};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 #[async_trait]
