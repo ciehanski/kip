@@ -18,7 +18,7 @@ dialoguer = "0.10"
 uuid = { version = "1.1", features = ["serde", "v4"] }
 directories = "4.0"
 aws-config = "0.47"
-aws-sdk-s3 = "0.17"
+aws-sdk-s3 = "0.18"
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1.56"
 fastcdc = "1.0.6"
