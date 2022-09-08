@@ -29,7 +29,7 @@ rust-argon2 = "1.0.0"
 zeroize = "1.5.6"
 async-compression = { version = "0.3.14", features = ["tokio", "zstd"] }
 keyring = "1"
-memmap2 = "0.5.4"
+memmap2 = "0.5.7"
 futures = "0.3"
 rand = "0.8.5"
 num_cpus = "1"
