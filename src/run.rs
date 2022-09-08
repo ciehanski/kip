@@ -34,6 +34,7 @@ pub struct Run {
     pub files_changed: Vec<FileChunk>,
     pub status: KipStatus,
     pub logs: Vec<String>,
+    pub retain_forever: bool,
 }
 
 impl Run {
@@ -47,6 +48,7 @@ impl Run {
             files_changed: Vec::new(),
             status: KipStatus::NEVER_RUN,
             logs: Vec::<String>::new(),
+            retain_forever: false,
         }
     }
 
@@ -450,68 +452,134 @@ impl Run {
         }
 
         // Get all bucket contents
-        let bucket_objects = job.provider.s3().unwrap().list_all(job.id).await?;
+        // This is done outside of the loops for performance reasons
+        let mut s3_objs: Vec<aws_sdk_s3::model::Object> = vec![];
+        let mut usb_objs: Vec<KipFile> = vec![];
+        match &job.provider {
+            KipProviders::S3(s3) => {
+                s3_objs.append(&mut s3.list_all(job.id).await?);
+            }
+            KipProviders::Usb(usb) => {
+                usb_objs.append(&mut usb.list_all(job.id).await?);
+            }
+        };
 
         // For each object in the bucket, download it
-        let mut counter: usize = 0;
+        let mut counter: u64 = 0;
         'files: for fc in self.files_changed.iter() {
             // If file has multiple chunks, store them
             // here for re-assembly later
             let mut multi_chunks: Vec<(&FileChunk, Vec<u8>)> = vec![];
-            // Check if this S3 object is within this run's changed files
-            's3: for ob in bucket_objects.iter() {
-                let s3_key = match &ob.key {
-                    Some(k) => k,
-                    None => {
-                        continue 's3;
-                    }
-                };
-                // Strip the hash from S3 key
-                let hash = strip_hash_from_s3(s3_key)?;
-                if fc.hash != hash {
-                    // S3 object not found in this run
-                    continue 's3;
-                } else {
-                    // Found a chunk for this file! Download
-                    // this chunk
-                    let local_path = fc.local_path.display().to_string().green();
-                    // Download chunk
-                    match job.provider.s3().unwrap().download(s3_key, secret).await {
-                        Ok(chunk_bytes) => {
-                            // Determine if single or multi-chunk file
-                            if self.is_single_chunk(fc) {
-                                // Increment file resote counter
-                                counter += 1;
-                                // If a single-chunk file, simply decrypt and write
-                                let mut cfile = create_file(&fc.local_path, output_folder)?;
-                                cfile.write_all(&chunk_bytes)?;
-                                println!(
-                                    "[{}] {}-{} ⇉ '{}' restored successfully. ({}/{})",
-                                    Utc::now().format("%Y-%m-%d %H:%M:%S"),
-                                    job.name,
-                                    self.id,
-                                    local_path,
-                                    counter,
-                                    job.files_amt,
-                                );
-                                continue 'files;
-                            } else {
-                                // If a multi-chunk file pass to multi-chunk vec
-                                // for re-assembly after loop finishes
-                                multi_chunks.push((fc, chunk_bytes));
+            match &job.provider {
+                KipProviders::S3(s3) => {
+                    // Check if this S3 object is within this run's changed files
+                    's3: for ob in s3_objs.iter() {
+                        let s3_key = match &ob.key {
+                            Some(k) => k,
+                            None => {
+                                continue 's3;
+                            }
+                        };
+                        // Strip the hash from S3 key
+                        let hash = strip_hash_from_s3(s3_key)?;
+                        if fc.hash != hash {
+                            // S3 object not found in this run
+                            continue 's3;
+                        } else {
+                            // Found a chunk for this file! Download
+                            // this chunk
+                            let local_path = fc.local_path.display().to_string().green();
+                            // Download chunk
+                            match s3.download(s3_key, secret).await {
+                                Ok(chunk_bytes) => {
+                                    // Determine if single or multi-chunk file
+                                    if self.is_single_chunk(fc) {
+                                        // Increment file resote counter
+                                        counter += 1;
+                                        // If a single-chunk file, simply decrypt and write
+                                        let mut cfile = create_file(&fc.local_path, output_folder)?;
+                                        cfile.write_all(&chunk_bytes)?;
+                                        println!(
+                                            "[{}] {}-{} ⇉ '{}' restored successfully. ({}/{})",
+                                            Utc::now().format("%Y-%m-%d %H:%M:%S"),
+                                            job.name,
+                                            self.id,
+                                            local_path,
+                                            counter,
+                                            job.files_amt,
+                                        );
+                                        continue 'files;
+                                    } else {
+                                        // If a multi-chunk file pass to multi-chunk vec
+                                        // for re-assembly after loop finishes
+                                        multi_chunks.push((fc, chunk_bytes));
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!(
+                                        "[{}] {}-{} ⇉ '{}' restore failed: {}. ({}/{})",
+                                        Utc::now().format("%Y-%m-%d %H:%M:%S"),
+                                        job.name,
+                                        self.id,
+                                        local_path,
+                                        e,
+                                        counter,
+                                        job.files_amt,
+                                    );
+                                }
                             }
                         }
-                        Err(e) => {
-                            eprintln!(
-                                "[{}] {}-{} ⇉ '{}' restore failed: {}. ({}/{})",
-                                Utc::now().format("%Y-%m-%d %H:%M:%S"),
-                                job.name,
-                                self.id,
-                                local_path,
-                                e,
-                                counter,
-                                job.files_amt,
-                            );
+                    }
+                }
+                KipProviders::Usb(usb) => {
+                    // Check if this USB object is within this run's changed files
+                    'usb: for ob in usb_objs.iter() {
+                        if fc.hash != ob.hash {
+                            // USB hash of object not found in this run
+                            continue 'usb;
+                        } else {
+                            // Found a chunk for this file! Download
+                            // this chunk
+                            let local_path = fc.local_path.display().to_string().green();
+                            // Download chunk
+                            match usb.download(&ob.path.display().to_string(), secret).await {
+                                Ok(chunk_bytes) => {
+                                    // Determine if single or multi-chunk file
+                                    if self.is_single_chunk(fc) {
+                                        // Increment file resote counter
+                                        counter += 1;
+                                        // If a single-chunk file, simply decrypt and write
+                                        let mut cfile = create_file(&fc.local_path, output_folder)?;
+                                        cfile.write_all(&chunk_bytes)?;
+                                        println!(
+                                            "[{}] {}-{} ⇉ '{}' restored successfully. ({}/{})",
+                                            Utc::now().format("%Y-%m-%d %H:%M:%S"),
+                                            job.name,
+                                            self.id,
+                                            local_path,
+                                            counter,
+                                            job.files_amt,
+                                        );
+                                        continue 'files;
+                                    } else {
+                                        // If a multi-chunk file pass to multi-chunk vec
+                                        // for re-assembly after loop finishes
+                                        multi_chunks.push((fc, chunk_bytes));
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!(
+                                        "[{}] {}-{} ⇉ '{}' restore failed: {}. ({}/{})",
+                                        Utc::now().format("%Y-%m-%d %H:%M:%S"),
+                                        job.name,
+                                        self.id,
+                                        local_path,
+                                        e,
+                                        counter,
+                                        job.files_amt,
+                                    );
+                                }
+                            }
                         }
                     }
                 }
@@ -572,14 +640,6 @@ fn assemble_chunks(
         cfile.seek(SeekFrom::Start(chunk.offset.try_into()?))?;
         cfile.write_all(chunk_bytes)?;
     }
-    // Maybe compare fmd of cfile to known size of
-    // orginally uploaded file?
-    // Then return bool if file is complete or not
-    // Then the function can count and print only when
-    // the result is true and the file restore is complete
-    // if cfile.metadata().unwrap().len() == complete_len {
-    //     return Ok(true)
-    // }
     Ok(())
 }
 
