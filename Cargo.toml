@@ -38,7 +38,7 @@ pretty-bytes = "0.2"
 comfy-table = "6"
 colored = "2.0"
 humantime = "2.1"
-sysinfo = "0.25"
+sysinfo = "0.26"
 # pavao = "0.1.2"
 
 [dev-dependencies]
