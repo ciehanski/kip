@@ -42,7 +42,7 @@ sysinfo = "0.26"
 # pavao = "0.1.2"
 
 [dev-dependencies]
-criterion = "0.3"
+criterion = "0.4"
 tempfile = "3.3"
 assert_cmd = "2.0"
 
