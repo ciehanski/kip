@@ -63,7 +63,7 @@ impl KipProvider for KipS3 {
             let encrypted = match encrypt(&compressed, secret) {
                 Ok(ec) => ec,
                 Err(e) => {
-                    bail!("failed to encrypt chunk: {}.", e)
+                    bail!("failed to encrypt chunk: {e}.")
                 }
             };
             // Get amount of bytes uploaded in this chunk
@@ -73,7 +73,7 @@ impl KipProvider for KipS3 {
             s3_client
                 .put_object()
                 .bucket(self.aws_bucket.clone())
-                .key(format!("{}/chunks/{}.chunk", job_id, chunk.hash))
+                .key(format!("{job_id}/chunks/{}.chunk", chunk.hash))
                 .content_length(ce_bytes_len.try_into()?)
                 .body(ByteStream::from(encrypted))
                 .send()
@@ -113,7 +113,7 @@ impl KipProvider for KipS3 {
         let decrypted = match decrypt(&result_bytes, secret) {
             Ok(dc) => dc,
             Err(e) => {
-                bail!("failed to decrypt file: {}.", e)
+                bail!("failed to decrypt file: {e}.")
             }
         };
         // Decompress decrypted bytes
@@ -144,7 +144,6 @@ impl KipProvider for KipS3 {
         // If the S3 bucket is empty, no need to check for duplicate chunks
         if !s3_objs.is_empty() {
             for obj in s3_objs {
-                // let key = strip_hash_from_s3(&obj.key.unwrap())?;
                 if let Some(obj_key) = obj.key {
                     if obj_key.contains(obj_name) {
                         // Duplicate chunk found, return true
@@ -199,5 +198,22 @@ impl KipProvider for KipS3 {
             }
         }
         Ok(corrected_contents)
+    }
+}
+
+/// Retrieves the hash from an S3 object name and returns
+/// it as a String.
+pub fn strip_hash_from_s3(s3_path: &str) -> Result<String> {
+    // Pop hash off from S3 path
+    let mut fp: Vec<&str> = s3_path.split('/').collect();
+    if let Some(hdt) = fp.pop() {
+        // Split the chunk. Ex: 902938470293847392033874592038473.chunk
+        let hs: Vec<&str> = hdt.split('.').collect();
+        // Just grab the first split, which is the hash
+        let hash = hs[0].to_string();
+        // Ship it
+        Ok(hash)
+    } else {
+        bail!("failed to pop chunk's S3 path.")
     }
 }
