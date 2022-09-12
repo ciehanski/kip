@@ -74,7 +74,7 @@ impl Job {
         // Set job metadata
         self.last_status = KipStatus::IN_PROGRESS;
         // Set AWS env vars for backup
-        self.set_s3_env_vars()?;
+        self.set_provider_env_vars()?;
         // Tell the run to start uploading
         match r.start(self.to_owned(), secret.to_string()).await {
             Ok(_) => {}
@@ -88,13 +88,13 @@ impl Job {
                 if self.first_run.format("%Y-%m-%d %H:%M:%S").to_string() == "1970-01-01 00:00:00" {
                     self.first_run = Utc::now();
                 }
-                // Reset AWS env to nil
-                self.zeroize_s3_env_vars();
-                bail!("{}.", e)
+                // Reset provider env vars to nil
+                self.zeroize_provider_env_vars();
+                bail!("{e}.")
             }
         };
-        // Reset AWS env to nil
-        self.zeroize_s3_env_vars();
+        // Reset provider env vars to nil
+        self.zeroize_provider_env_vars();
         // Set job status
         self.last_status = r.status;
         // Print all logs from run
@@ -109,11 +109,22 @@ impl Job {
             if self.first_run.format("%Y-%m-%d %H:%M:%S").to_string() == "1970-01-01 00:00:00" {
                 self.first_run = Utc::now();
             }
+            let provider = match &self.provider {
+                KipProviders::S3(s3) => s3.aws_bucket.to_owned(),
+                KipProviders::Usb(usb) => usb.name.to_owned(),
+                KipProviders::Gdrive(gdrive) => {
+                    if let Some(pf) = gdrive.parent_folder.to_owned() {
+                        format!("My Drive/{pf}")
+                    } else {
+                        "My Drive/".to_string()
+                    }
+                }
+            };
             println!(
                 "{} job '{}' completed uploading to '{}' successfully.",
                 "[OK]".green(),
                 &self.name,
-                &self.provider.s3().unwrap().aws_bucket,
+                provider,
             );
         } else {
             println!("{} no file changes detected.", "[INFO]".yellow());
@@ -126,21 +137,21 @@ impl Job {
         // Get run from job
         if let Some(r) = self.runs.get(&run) {
             // Set AWS env vars for backup
-            self.set_s3_env_vars()?;
+            self.set_provider_env_vars()?;
             // Tell the run to start uploading
             match r.restore(self, secret, output_folder).await {
                 Ok(_) => (),
                 Err(e) => {
-                    // Reset AWS env to nil
-                    self.zeroize_s3_env_vars();
-                    bail!("{}.", e)
+                    // Reset provider env vars to nil
+                    self.zeroize_provider_env_vars();
+                    bail!("{e}.")
                 }
             };
         } else {
-            bail!("couldn't find run {}.", run)
+            bail!("couldn't find run {run}.")
         }
-        // Reset AWS env to nil
-        self.zeroize_s3_env_vars();
+        // Reset provider env vars to nil
+        self.zeroize_provider_env_vars();
         // Success
         Ok(())
     }
@@ -149,7 +160,7 @@ impl Job {
         // Find all the runs that contain this file's chunks
         // and remove them from S3.
         let fpath = Path::new(&f).canonicalize()?;
-        self.set_s3_env_vars()?;
+        self.set_provider_env_vars()?;
         for run in self.runs.iter() {
             for chunk in run.1.files_changed.iter() {
                 if chunk.local_path == fpath {
@@ -162,12 +173,15 @@ impl Job {
                         KipProviders::Usb(usb) => {
                             usb.delete(&chunk_path).await?;
                         }
+                        KipProviders::Gdrive(gdrive) => {
+                            gdrive.delete(&chunk_path).await?;
+                        }
                     };
                 }
             }
         }
-        // Reset AWS env env to nil
-        self.zeroize_s3_env_vars();
+        // Reset provider env vars to nil
+        self.zeroize_provider_env_vars();
         // Set job metadata
         self.bytes_amt_provider -= fpath.metadata()?.len();
         Ok(())
@@ -218,18 +232,34 @@ impl Job {
         Ok(())
     }
 
-    fn set_s3_env_vars(&self) -> Result<()> {
-        if let KipProviders::S3(s3) = &self.provider {
-            let s3acc = keyring_get_secret(&format!("com.ciehanski.kip.{}.s3acc", self.name))
-                .context("couldnt get s3acc from keyring")?;
-            let s3acc = s3acc.trim_end();
-            let s3sec = keyring_get_secret(&format!("com.ciehanski.kip.{}.s3sec", self.name))
-                .context("couldn't get s3sec from keyring")?;
-            let s3sec = s3sec.trim_end();
-            // Set AWS env vars to user's keys
-            env::set_var("AWS_ACCESS_KEY_ID", s3acc);
-            env::set_var("AWS_SECRET_ACCESS_KEY", s3sec);
-            env::set_var("AWS_REGION", &s3.aws_region);
+    fn set_provider_env_vars(&self) -> Result<()> {
+        match &self.provider {
+            KipProviders::S3(s3) => {
+                let s3acc = keyring_get_secret(&format!("com.ciehanski.kip.{}.s3acc", self.name))
+                    .context("couldnt get s3acc from keyring")?;
+                let s3acc = s3acc.trim_end();
+                let s3sec = keyring_get_secret(&format!("com.ciehanski.kip.{}.s3sec", self.name))
+                    .context("couldn't get s3sec from keyring")?;
+                let s3sec = s3sec.trim_end();
+                // Set AWS env vars to user's keys
+                env::set_var("AWS_ACCESS_KEY_ID", s3acc);
+                env::set_var("AWS_SECRET_ACCESS_KEY", s3sec);
+                env::set_var("AWS_REGION", &s3.aws_region);
+            }
+            KipProviders::Gdrive(_) => {
+                let gdrive_id =
+                    keyring_get_secret(&format!("com.ciehanski.kip.{}.gdriveid", self.name))
+                        .context("couldnt get gdriveid from keyring")?;
+                let gdrive_id = gdrive_id.trim_end();
+                let gdrive_sec =
+                    keyring_get_secret(&format!("com.ciehanski.kip.{}.gdrivesec", self.name))
+                        .context("couldn't get gdrivesec from keyring")?;
+                let gdrive_sec = gdrive_sec.trim_end();
+                // Set AWS env vars to user's keys
+                env::set_var("GOOGLE_DRIVE_CLIENT_ID", gdrive_id);
+                env::set_var("GOOGLE_DRIVE_CLIENT_SECRET", gdrive_sec);
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -239,25 +269,47 @@ impl Job {
             .context("couldnt get job secret from keyring")?;
         let job_secret = job_secret.trim_end();
         keyring_delete_secret(job_secret)?;
-        if self.provider.is_s3() {
-            let s3acc = keyring_get_secret(&format!("com.ciehanski.kip.{}.s3acc", self.name))
-                .context("couldnt get s3acc from keyring")?;
-            let s3acc = s3acc.trim_end();
-            let s3sec = keyring_get_secret(&format!("com.ciehanski.kip.{}.s3sec", self.name))
-                .context("couldn't get s3sec from keyring")?;
-            let s3sec = s3sec.trim_end();
-            keyring_delete_secret(s3acc)?;
-            keyring_delete_secret(s3sec)?;
+        match self.provider {
+            KipProviders::S3(_) => {
+                let s3acc = keyring_get_secret(&format!("com.ciehanski.kip.{}.s3acc", self.name))
+                    .context("couldnt get s3acc from keyring")?;
+                let s3acc = s3acc.trim_end();
+                let s3sec = keyring_get_secret(&format!("com.ciehanski.kip.{}.s3sec", self.name))
+                    .context("couldn't get s3sec from keyring")?;
+                let s3sec = s3sec.trim_end();
+                keyring_delete_secret(s3acc)?;
+                keyring_delete_secret(s3sec)?;
+            }
+            KipProviders::Gdrive(_) => {
+                let gdrive_id =
+                    keyring_get_secret(&format!("com.ciehanski.kip.{}.gdriveid", self.name))
+                        .context("couldnt get gdriveid from keyring")?;
+                let gdrive_id = gdrive_id.trim_end();
+                let gdrive_sec =
+                    keyring_get_secret(&format!("com.ciehanski.kip.{}.gdrivesec", self.name))
+                        .context("couldn't get gdrivesec from keyring")?;
+                let gdrive_sec = gdrive_sec.trim_end();
+                keyring_delete_secret(gdrive_id)?;
+                keyring_delete_secret(gdrive_sec)?;
+            }
+            _ => {}
         }
         Ok(())
     }
 
     /// Reset AWS env vars to nil
-    pub fn zeroize_s3_env_vars(&self) {
-        if self.provider.is_s3() {
-            env::set_var("AWS_ACCESS_KEY_ID", "");
-            env::set_var("AWS_SECRET_ACCESS_KEY", "");
-            env::set_var("AWS_REGION", "");
+    pub fn zeroize_provider_env_vars(&self) {
+        match &self.provider {
+            KipProviders::S3(_) => {
+                env::set_var("AWS_ACCESS_KEY_ID", "");
+                env::set_var("AWS_SECRET_ACCESS_KEY", "");
+                env::set_var("AWS_REGION", "");
+            }
+            KipProviders::Gdrive(_) => {
+                env::set_var("GOOGLE_DRIVE_CLIENT_ID", "");
+                env::set_var("GOOGLE_DRIVE_CLIENT_SECRET", "");
+            }
+            _ => {}
         }
     }
 }

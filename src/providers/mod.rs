@@ -2,13 +2,15 @@
 // Copyright (c) 2022 Ryan Ciehanski <ryan@ciehanski.com>
 //
 
+pub mod gdrive;
 pub mod s3;
-// pub mod smb;
 pub mod usb;
+// pub mod smb;
 
+use self::gdrive::KipGdrive;
+use self::s3::KipS3;
+use self::usb::KipUsb;
 use crate::chunk::FileChunk;
-use crate::providers::s3::KipS3;
-use crate::providers::usb::KipUsb;
 use anyhow::Result;
 use async_trait::async_trait;
 use linya::{Bar, Progress};
@@ -42,6 +44,7 @@ pub trait KipProvider {
 pub enum KipProviders {
     S3(KipS3),
     Usb(KipUsb),
+    Gdrive(KipGdrive),
 }
 
 impl KipProviders {
@@ -51,6 +54,10 @@ impl KipProviders {
 
     pub fn is_usb(&self) -> bool {
         matches!(self, KipProviders::Usb(_))
+    }
+
+    pub fn is_gdrive(&self) -> bool {
+        matches!(self, KipProviders::Gdrive(_))
     }
 
     pub fn s3(&self) -> Option<&KipS3> {
@@ -63,6 +70,13 @@ impl KipProviders {
     pub fn usb(&self) -> Option<&KipUsb> {
         match self {
             KipProviders::Usb(usb) => Some(usb),
+            _ => None,
+        }
+    }
+
+    pub fn gdrive(&self) -> Option<&KipGdrive> {
+        match self {
+            KipProviders::Gdrive(gdrive) => Some(gdrive),
             _ => None,
         }
     }

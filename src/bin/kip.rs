@@ -14,7 +14,7 @@ use kip::cli::{Cli, Subcommands};
 use kip::conf::KipConf;
 use kip::crypto::{keyring_get_secret, keyring_set_secret};
 use kip::job::{Job, KipFile, KipStatus};
-use kip::providers::{s3::KipS3, usb::KipUsb, KipProviders};
+use kip::providers::{gdrive::KipGdrive, s3::KipS3, usb::KipUsb, KipProviders};
 use kip::terminate;
 use pretty_bytes::converter::convert;
 use std::io::prelude::*;
@@ -82,6 +82,7 @@ fn main() {
                 // Confirm if S3 or USB job
                 let provider_selection: usize = Select::with_theme(&ColorfulTheme::default())
                     .item("S3")
+                    .item("Google Drive")
                     .item("USB")
                     .default(0)
                     .interact()
@@ -160,6 +161,68 @@ fn main() {
                         md.jobs.insert(job.clone(), new_job);
                     }
                     1 => {
+                        // Google Drive
+                        // Get Google Drive client ID from user input
+                        print!("Please provide the Google Drive OAuth client ID: ");
+                        std::io::stdout()
+                            .flush()
+                            .expect("[ERR] failed to flush stdout.");
+                        let mut gdrive_client_id = String::new();
+                        std::io::stdin().read_line(&mut gdrive_client_id).expect(
+                            "[ERR] failed to read Google Drive OAuth client ID from stdin.",
+                        );
+                        // Store Google Drive client ID onto local OS keyring
+                        keyring_set_secret(
+                            &format!("com.ciehanski.kip.{}.gdriveid", &job),
+                            &gdrive_client_id,
+                        )
+                        .unwrap_or_else(|e| {
+                            terminate!(
+                                5,
+                                "{} failed to push Google Drive client ID onto keyring: {}.",
+                                "[ERR]".red(),
+                                e
+                            );
+                        });
+                        // Get Google Drive client secret from user input
+                        print!("Please provide the Google Drive OAuth client secret: ");
+                        std::io::stdout()
+                            .flush()
+                            .expect("[ERR] failed to flush stdout.");
+                        let mut gdrive_client_sec = String::new();
+                        std::io::stdin().read_line(&mut gdrive_client_sec).expect(
+                            "[ERR] failed to read Google Drive OAuth client secret from stdin.",
+                        );
+                        // Store Google Drive client ID onto local OS keyring
+                        keyring_set_secret(
+                            &format!("com.ciehanski.kip.{}.gdrivesec", &job),
+                            &gdrive_client_sec,
+                        )
+                        .unwrap_or_else(|e| {
+                            terminate!(
+                                5,
+                                "{} failed to push Google Drive client ID onto keyring: {}.",
+                                "[ERR]".red(),
+                                e
+                            );
+                        });
+                        // Get GDrive parent folder from user input
+                        print!("Optionally, provide the parent folder ID: ");
+                        std::io::stdout()
+                            .flush()
+                            .expect("[ERR] failed to flush stdout.");
+                        let mut gdrive_folder = String::new();
+                        std::io::stdin().read_line(&mut gdrive_folder).expect(
+                            "[ERR] failed to read Google Drive parent folder ID from stdin.",
+                        );
+                        // Create the new job
+                        let provider =
+                            KipProviders::Gdrive(KipGdrive::new(Some(gdrive_folder.trim_end())));
+                        let new_job = Job::new(&job, provider);
+                        // Push new job in config
+                        md.jobs.insert(job.clone(), new_job);
+                    }
+                    2 => {
                         // USB
                         let mut sys = System::new();
                         sys.refresh_disks_list();
@@ -214,7 +277,7 @@ fn main() {
                         terminate!(1, "Invalid selection. Please try again.");
                     }
                 }
-                // // Store new job in config
+                // Store new job in config
                 match md.save() {
                     Ok(_) => println!("{} job '{}' successfully created.", "[OK]".green(), job),
                     Err(e) => terminate!(
@@ -710,6 +773,7 @@ fn main() {
                         let provider = match j.provider {
                             KipProviders::S3(_) => "S3",
                             KipProviders::Usb(_) => "USB",
+                            KipProviders::Gdrive(_) => "Google Drive",
                         };
                         // Add row with job info
                         table.add_row(vec![
@@ -767,7 +831,7 @@ fn main() {
                                 "Selected Files",
                                 "Total Runs",
                                 "Last Run",
-                                "Bytes (Provider)",
+                                "Bytes (in S3)",
                                 "Status",
                             ]);
                             // Add row with job info
@@ -794,7 +858,7 @@ fn main() {
                                 "Selected Files",
                                 "Total Runs",
                                 "Last Run",
-                                "Bytes (Provider)",
+                                "Bytes (on USB)",
                                 "Status",
                             ]);
                             // Add row with job info
@@ -804,6 +868,33 @@ fn main() {
                                 Cell::new(&usb.name),
                                 Cell::new(convert(usb.used_capacity as f64)),
                                 Cell::new(convert(usb.capacity as f64)),
+                                Cell::new(correct_files),
+                                Cell::new(j.total_runs),
+                                Cell::new(correct_last_run),
+                                Cell::new(convert(j.bytes_amt_provider as f64)),
+                                print_status(j.last_status),
+                            ]);
+                        }
+                        KipProviders::Gdrive(gdrive) => {
+                            table.set_header(&vec![
+                                "Name",
+                                "ID",
+                                "Google Drive Folder ID",
+                                "Selected Files",
+                                "Total Runs",
+                                "Last Run",
+                                "Bytes (Provider)",
+                                "Status",
+                            ]);
+                            let parent_folder = match &gdrive.parent_folder {
+                                Some(pf) => pf,
+                                _ => "/",
+                            };
+                            // Add row with job info
+                            table.add_row(vec![
+                                Cell::new(&j.name).fg(comfy_table::Color::Green),
+                                Cell::new(j.id),
+                                Cell::new(parent_folder),
                                 Cell::new(correct_files),
                                 Cell::new(j.total_runs),
                                 Cell::new(correct_last_run),
@@ -873,6 +964,31 @@ fn main() {
                                     .fg(comfy_table::Color::Green),
                                 Cell::new(&usb.name),
                                 Cell::new(usb.root_path.display().to_string()),
+                                Cell::new(r.files_changed.len()),
+                                Cell::new(convert(r.bytes_uploaded as f64)),
+                                Cell::new(&r.time_elapsed),
+                                print_status(r.status),
+                            ]);
+                        }
+                        KipProviders::Gdrive(gdrive) => {
+                            // Create the header row
+                            table.set_header(&vec![
+                                "Name",
+                                "Google Drive Folder ID",
+                                "Chunks Uploaded",
+                                "Bytes Uploaded",
+                                "Run Time",
+                                "Status",
+                            ]);
+                            let parent_folder = match &gdrive.parent_folder {
+                                Some(pf) => pf,
+                                _ => "/",
+                            };
+                            // Add row with run info
+                            table.add_row(vec![
+                                Cell::new(format!("{}-{}", j.name, r.id))
+                                    .fg(comfy_table::Color::Green),
+                                Cell::new(parent_folder),
                                 Cell::new(r.files_changed.len()),
                                 Cell::new(convert(r.bytes_uploaded as f64)),
                                 Cell::new(&r.time_elapsed),

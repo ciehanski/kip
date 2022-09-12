@@ -4,7 +4,7 @@
 
 use crate::chunk::{chunk_file, FileChunk};
 use crate::job::{Job, KipFile, KipStatus};
-use crate::providers::{KipProvider, KipProviders};
+use crate::providers::{s3::strip_hash_from_s3, KipProvider, KipProviders};
 use anyhow::{bail, Result};
 use async_compression::tokio::write::{ZstdDecoder, ZstdEncoder};
 use chrono::prelude::*;
@@ -234,7 +234,7 @@ impl Run {
         // all to finish here
         futures::future::join_all(upload_futures).await;
 
-        // Set run metadata
+        // Finished! Set the run metadata before returning
         self.finished = Utc::now();
         let dur = self.finished.signed_duration_since(started).to_std()?;
         self.time_elapsed = format_duration(dur).to_string();
@@ -254,7 +254,7 @@ impl Run {
             }
         }
 
-        // Print logs
+        // Print the run's logs
         let fin_log = format!(
             "[{}] {}-{} ⇉ upload completed.",
             Utc::now().format("%Y-%m-%d %H:%M:%S"),
@@ -310,6 +310,11 @@ impl Run {
                 }
                 KipProviders::Usb(usb) => {
                     if !usb.contains(job.id, &chunk.hash).await? {
+                        chunks_missing += 1;
+                    };
+                }
+                KipProviders::Gdrive(gdrive) => {
+                    if !gdrive.contains(job.id, &chunk.hash).await? {
                         chunks_missing += 1;
                     };
                 }
@@ -433,6 +438,52 @@ impl Run {
                         }
                     };
                 }
+                KipProviders::Gdrive(gdrive) => {
+                    match gdrive
+                        .upload(
+                            &f.path.canonicalize()?,
+                            chunks_map,
+                            job.id,
+                            secret,
+                            progress,
+                            &bar,
+                        )
+                        .await
+                    {
+                        Ok((chunked_file, bu)) => {
+                            // Confirm the chunked file is not empty AKA
+                            // this chunk has not been modified, skip it
+                            if !chunked_file.is_empty() {
+                                // Increase bytes uploaded for this run
+                                bytes_uploaded += bu;
+                                // Push chunks onto run's changed files
+                                for c in chunked_file {
+                                    files_changed.push(c);
+                                }
+                                // Push logs
+                                file_upload_log = format!(
+                                    "[{}] {}-{} ⇉ '{}' uploaded successfully to Google Drive.",
+                                    Utc::now().format("%Y-%m-%d %H:%M:%S"),
+                                    job.name,
+                                    self.id,
+                                    f.path.display().to_string().green(),
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            // Push logs
+                            file_upload_log = format!(
+                                "[{}] {}-{} ⇉ '{}' upload failed: {}.",
+                                Utc::now().format("%Y-%m-%d %H:%M:%S"),
+                                job.name,
+                                self.id,
+                                f.path.display().to_string().red(),
+                                e,
+                            );
+                            progress_cancel.lock().await.cancel(bar);
+                        }
+                    };
+                }
             }
         }
         Ok((file_upload_log, files_changed, bytes_uploaded))
@@ -455,12 +506,16 @@ impl Run {
         // This is done outside of the loops for performance reasons
         let mut s3_objs: Vec<aws_sdk_s3::model::Object> = vec![];
         let mut usb_objs: Vec<KipFile> = vec![];
+        let mut gdrive_objs: Vec<google_drive3::api::File> = vec![];
         match &job.provider {
             KipProviders::S3(s3) => {
                 s3_objs.append(&mut s3.list_all(job.id).await?);
             }
             KipProviders::Usb(usb) => {
                 usb_objs.append(&mut usb.list_all(job.id).await?);
+            }
+            KipProviders::Gdrive(gdrive) => {
+                gdrive_objs.append(&mut gdrive.list_all(job.id).await?);
             }
         };
 
@@ -583,6 +638,9 @@ impl Run {
                         }
                     }
                 }
+                KipProviders::Gdrive(_) => {
+                    unimplemented!();
+                }
             }
 
             // Only run if multi_chunks is not empty
@@ -643,6 +701,8 @@ fn assemble_chunks(
     Ok(())
 }
 
+/// Creates a restored file and its parent folders while
+/// properly handling file prefixes depending on the running OS.
 fn create_file(path: &Path, output_folder: &str) -> Result<File> {
     // Only strip prefix if path has a prefix
     let mut correct_chunk_path = path;
@@ -659,21 +719,6 @@ fn create_file(path: &Path, output_folder: &str) -> Result<File> {
         OpenOptions::new().write(true).open(folder_path)?
     };
     Ok(cfile)
-}
-
-pub fn strip_hash_from_s3(s3_path: &str) -> Result<String> {
-    // Pop hash off from S3 path
-    let mut fp: Vec<&str> = s3_path.split('/').collect();
-    if let Some(hdt) = fp.pop() {
-        // Split the chunk. Ex: 902938470293847392033874592038473.chunk
-        let hs: Vec<&str> = hdt.split('.').collect();
-        // Just grab the first split, which is the hash
-        let hash = hs[0].to_string();
-        // Ship it
-        Ok(hash)
-    } else {
-        bail!("failed to pop chunk's S3 path.")
-    }
 }
 
 pub async fn compress(bytes: &[u8]) -> Result<Vec<u8>> {
