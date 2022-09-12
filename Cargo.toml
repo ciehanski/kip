@@ -39,10 +39,11 @@ comfy-table = "6"
 colored = "2.0"
 humantime = "2.1"
 sysinfo = "0.26"
+google-drive3 = "*"
 # pavao = "0.1.2"
 
 [dev-dependencies]
-criterion = "0.3"
+criterion = "0.4"
 tempfile = "3.3"
 assert_cmd = "2.0"
 
