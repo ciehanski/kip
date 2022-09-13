@@ -782,16 +782,6 @@ mod tests {
     }
 
     #[test]
-    fn test_strip_hash_from_s3() {
-        // Split the 902938470293847392033874592038473.chunk
-        let hash = strip_hash_from_s3("f339aae7-e994-4fb4-b6aa-623681df99aa/chunks/001d46082763b930e5b9f0c52d16841b443bfbcd52af6cd475cb0182548da33a.chunk").unwrap();
-        assert_eq!(
-            hash,
-            "001d46082763b930e5b9f0c52d16841b443bfbcd52af6cd475cb0182548da33a"
-        )
-    }
-
-    #[test]
     fn test_assemble_chunks() {
         use rand::seq::SliceRandom;
         use rand::thread_rng;
