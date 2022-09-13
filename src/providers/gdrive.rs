@@ -9,6 +9,8 @@ use anyhow::{bail, Result};
 use async_trait::async_trait;
 use directories::ProjectDirs;
 use drive3::api::{File, Scope};
+use drive3::hyper::client::HttpConnector;
+use drive3::hyper_rustls::HttpsConnector;
 use drive3::{hyper, hyper_rustls, oauth2, DriveHub, Error};
 use google_drive3 as drive3;
 use linya::{Bar, Progress};
@@ -46,21 +48,6 @@ impl KipGdrive {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct GdriveFile {
-    id: String,
-    name: String,
-}
-
-impl GdriveFile {
-    pub fn new<S: Into<String>>(id: S, name: S) -> Self {
-        Self {
-            id: id.into(),
-            name: name.into(),
-        }
-    }
-}
-
 #[async_trait]
 impl KipProvider for KipGdrive {
     type Item = File;
@@ -74,44 +61,8 @@ impl KipProvider for KipGdrive {
         progress: Arc<Mutex<Progress>>,
         bar: &Bar,
     ) -> Result<(Vec<FileChunk>, u64)> {
-        // Get client ID and client secret from env
-        let client_id = std::env::var("GOOGLE_DRIVE_CLIENT_ID")?;
-        let client_secret = std::env::var("GOOGLE_DRIVE_CLIENT_SECRET")?;
-        // Create Google OAuth client config
-        let gdrive_secret = oauth2::ApplicationSecret {
-            client_id,
-            client_secret,
-            redirect_uris: vec![REDIRECT_URI.to_string()],
-            auth_uri: AUTH_URI.to_string(),
-            token_uri: TOKEN_URI.to_string(),
-            auth_provider_x509_cert_url: Some(AUTH_PROVIDER.to_string()),
-            ..Default::default()
-        };
-        // OAuth2 token storage
-        let token_storage = ProjectDirs::from("com", "ciehanski", "kip")
-            .unwrap()
-            .config_dir()
-            .join(TOKEN_STORAGE);
-        // OAuth2 client request init
-        let gdrive_auth = oauth2::InstalledFlowAuthenticator::builder(
-            gdrive_secret,
-            oauth2::InstalledFlowReturnMethod::HTTPRedirect,
-        )
-        .persist_tokens_to_disk(token_storage)
-        .build()
-        .await?;
-        // Create Google Drive Hub client
-        let hub = DriveHub::new(
-            hyper::Client::builder().build(
-                hyper_rustls::HttpsConnectorBuilder::new()
-                    .with_native_roots()
-                    .https_or_http()
-                    .enable_http1()
-                    .enable_http2()
-                    .build(),
-            ),
-            gdrive_auth,
-        );
+        // Generate Google Drive Hub
+        let hub = generate_gdrive_hub().await?;
         // Upload each chunk
         let mut chunks = vec![];
         let mut bytes_uploaded: u64 = 0;
@@ -122,7 +73,7 @@ impl KipProvider for KipGdrive {
             let encrypted = match encrypt(&compressed, secret) {
                 Ok(ec) => ec,
                 Err(e) => {
-                    bail!("failed to encrypt chunk: {}.", e)
+                    bail!("failed to encrypt chunk: {e}.")
                 }
             };
             // Get amount of bytes uploaded in this chunk
@@ -159,44 +110,9 @@ impl KipProvider for KipGdrive {
     }
 
     async fn download(&self, f: &str, secret: &str) -> Result<Vec<u8>> {
-        // Get client ID and client secret from env
-        let client_id = std::env::var("GOOGLE_DRIVE_CLIENT_ID")?;
-        let client_secret = std::env::var("GOOGLE_DRIVE_CLIENT_SECRET")?;
-        // Create Google OAuth client config
-        let gdrive_secret = oauth2::ApplicationSecret {
-            client_id,
-            client_secret,
-            redirect_uris: vec![REDIRECT_URI.to_string()],
-            auth_uri: AUTH_URI.to_string(),
-            token_uri: TOKEN_URI.to_string(),
-            auth_provider_x509_cert_url: Some(AUTH_PROVIDER.to_string()),
-            ..Default::default()
-        };
-        // OAuth2 token storage
-        let token_storage = ProjectDirs::from("com", "ciehanski", "kip")
-            .unwrap()
-            .config_dir()
-            .join(TOKEN_STORAGE);
-        // OAuth2 client request init
-        let gdrive_auth = oauth2::InstalledFlowAuthenticator::builder(
-            gdrive_secret,
-            oauth2::InstalledFlowReturnMethod::HTTPRedirect,
-        )
-        .persist_tokens_to_disk(token_storage)
-        .build()
-        .await?;
-        // Create Google Drive Hub client
-        let hub = DriveHub::new(
-            hyper::Client::builder().build(
-                hyper_rustls::HttpsConnectorBuilder::new()
-                    .with_native_roots()
-                    .https_or_http()
-                    .enable_http1()
-                    .enable_http2()
-                    .build(),
-            ),
-            gdrive_auth,
-        );
+        // Generate Google Drive Hub
+        let hub = generate_gdrive_hub().await?;
+        // Create download request
         let req = hub
             .files()
             .get(f)
@@ -204,6 +120,7 @@ impl KipProvider for KipGdrive {
             .supports_all_drives(false)
             .acknowledge_abuse(true)
             .param("alt", "media");
+        // Send request and parse response into Vec<u8>
         let result_bytes = match req.doit().await {
             Ok((resp, _)) => Vec::from(hyper::body::to_bytes(resp.into_body()).await?),
             Err(e) => match e {
@@ -233,44 +150,8 @@ impl KipProvider for KipGdrive {
     }
 
     async fn delete(&self, file_name: &str) -> Result<()> {
-        // Get client ID and client secret from env
-        let client_id = std::env::var("GOOGLE_DRIVE_CLIENT_ID")?;
-        let client_secret = std::env::var("GOOGLE_DRIVE_CLIENT_SECRET")?;
-        // Create Google OAuth client config
-        let gdrive_secret = oauth2::ApplicationSecret {
-            client_id,
-            client_secret,
-            redirect_uris: vec![REDIRECT_URI.to_string()],
-            auth_uri: AUTH_URI.to_string(),
-            token_uri: TOKEN_URI.to_string(),
-            auth_provider_x509_cert_url: Some(AUTH_PROVIDER.to_string()),
-            ..Default::default()
-        };
-        // OAuth2 token storage
-        let token_storage = ProjectDirs::from("com", "ciehanski", "kip")
-            .unwrap()
-            .config_dir()
-            .join(TOKEN_STORAGE);
-        // OAuth2 client request init
-        let gdrive_auth = oauth2::InstalledFlowAuthenticator::builder(
-            gdrive_secret,
-            oauth2::InstalledFlowReturnMethod::HTTPRedirect,
-        )
-        .persist_tokens_to_disk(token_storage)
-        .build()
-        .await?;
-        // Create Google Drive Hub client
-        let hub = DriveHub::new(
-            hyper::Client::builder().build(
-                hyper_rustls::HttpsConnectorBuilder::new()
-                    .with_native_roots()
-                    .https_or_http()
-                    .enable_http1()
-                    .enable_http2()
-                    .build(),
-            ),
-            gdrive_auth,
-        );
+        // Generate Google Drive Hub
+        let hub = generate_gdrive_hub().await?;
         // Delete file
         match hub.files().delete(file_name).doit().await {
             Ok(_) => Ok(()),
@@ -310,44 +191,8 @@ impl KipProvider for KipGdrive {
     }
 
     async fn list_all(&self, _job_id: Uuid) -> Result<Vec<Self::Item>> {
-        // Get client ID and client secret from env
-        let client_id = std::env::var("GOOGLE_DRIVE_CLIENT_ID")?;
-        let client_secret = std::env::var("GOOGLE_DRIVE_CLIENT_SECRET")?;
-        // Create Google OAuth client config
-        let gdrive_secret = oauth2::ApplicationSecret {
-            client_id,
-            client_secret,
-            redirect_uris: vec![REDIRECT_URI.to_string()],
-            auth_uri: AUTH_URI.to_string(),
-            token_uri: TOKEN_URI.to_string(),
-            auth_provider_x509_cert_url: Some(AUTH_PROVIDER.to_string()),
-            ..Default::default()
-        };
-        // OAuth2 token storage
-        let token_storage = ProjectDirs::from("com", "ciehanski", "kip")
-            .unwrap()
-            .config_dir()
-            .join(TOKEN_STORAGE);
-        // OAuth2 client request init
-        let gdrive_auth = oauth2::InstalledFlowAuthenticator::builder(
-            gdrive_secret,
-            oauth2::InstalledFlowReturnMethod::HTTPRedirect,
-        )
-        .persist_tokens_to_disk(token_storage)
-        .build()
-        .await?;
-        // Create Google Drive Hub client
-        let hub = DriveHub::new(
-            hyper::Client::builder().build(
-                hyper_rustls::HttpsConnectorBuilder::new()
-                    .with_native_roots()
-                    .https_or_http()
-                    .enable_http1()
-                    .enable_http2()
-                    .build(),
-            ),
-            gdrive_auth,
-        );
+        // Generate Google Drive Hub
+        let hub = generate_gdrive_hub().await?;
         // Create request to collect all files
         let result = hub
             .files()
@@ -359,12 +204,9 @@ impl KipProvider for KipGdrive {
             .include_team_drive_items(false)
             .include_items_from_all_drives(true);
         // Send request
-        let mut gfiles = vec![];
         match result.doit().await {
             Ok((_, file_list)) => {
-                for file in file_list.files.unwrap() {
-                    gfiles.push(file);
-                }
+                Ok(file_list.files.unwrap())
                 // match file_list.next_page_token {
                 //     Some(_) => {
                 //         self.fetch_files(hub, modified_since, file_list.next_page_token)
@@ -387,17 +229,47 @@ impl KipProvider for KipGdrive {
                 | Error::JsonDecodeError(_, _) => bail!("{e}"),
             },
         }
-        // Get corrected files for this job
-        let mut t = vec![];
-        for mut f in gfiles {
-            if let Some(name) = f.name {
-                if let Some(new_name) = name.split_once('.') {
-                    let final_name = new_name.0.to_string();
-                    f.name = Some(final_name);
-                    t.push(f);
-                }
-            }
-        }
-        Ok(t)
     }
+}
+
+async fn generate_gdrive_hub() -> Result<DriveHub<HttpsConnector<HttpConnector>>> {
+    // Get client ID and client secret from env
+    let client_id = std::env::var("GOOGLE_DRIVE_CLIENT_ID")?;
+    let client_secret = std::env::var("GOOGLE_DRIVE_CLIENT_SECRET")?;
+    // Create Google OAuth client config
+    let gdrive_secret = oauth2::ApplicationSecret {
+        client_id,
+        client_secret,
+        redirect_uris: vec![REDIRECT_URI.to_string()],
+        auth_uri: AUTH_URI.to_string(),
+        token_uri: TOKEN_URI.to_string(),
+        auth_provider_x509_cert_url: Some(AUTH_PROVIDER.to_string()),
+        ..Default::default()
+    };
+    // OAuth2 token storage
+    let token_storage = ProjectDirs::from("com", "ciehanski", "kip")
+        .unwrap()
+        .config_dir()
+        .join(TOKEN_STORAGE);
+    // OAuth2 client request init
+    let gdrive_auth = oauth2::InstalledFlowAuthenticator::builder(
+        gdrive_secret,
+        oauth2::InstalledFlowReturnMethod::HTTPRedirect,
+    )
+    .persist_tokens_to_disk(token_storage)
+    .build()
+    .await?;
+    // Create Google Drive Hub client
+    let hub = DriveHub::new(
+        hyper::Client::builder().build(
+            hyper_rustls::HttpsConnectorBuilder::new()
+                .with_native_roots()
+                .https_or_http()
+                .enable_http1()
+                .enable_http2()
+                .build(),
+        ),
+        gdrive_auth,
+    );
+    Ok(hub)
 }
