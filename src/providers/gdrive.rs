@@ -170,14 +170,14 @@ impl KipProvider for KipGdrive {
         }
     }
 
-    async fn contains(&self, _job_id: Uuid, obj_name: &str) -> Result<bool> {
+    async fn contains(&self, _job_id: Uuid, hash: &str) -> Result<bool> {
         // Check Google Drive for duplicates of chunk
         let gdrive_objs = self.list_all(_job_id).await?;
         // If Google Drive is empty, no need to check for duplicate chunks
         if !gdrive_objs.is_empty() {
             for obj in gdrive_objs {
                 if let Some(gd_name) = obj.name {
-                    if gd_name == obj_name {
+                    if gd_name.contains(hash) {
                         // Duplicate chunk found, return true
                         return Ok(true);
                     }

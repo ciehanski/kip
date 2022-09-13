@@ -138,14 +138,14 @@ impl KipProvider for KipS3 {
         Ok(())
     }
 
-    async fn contains(&self, job_id: Uuid, obj_name: &str) -> Result<bool> {
+    async fn contains(&self, job_id: Uuid, hash: &str) -> Result<bool> {
         // Check S3 for duplicates of chunk
         let s3_objs = self.list_all(job_id).await?;
         // If the S3 bucket is empty, no need to check for duplicate chunks
         if !s3_objs.is_empty() {
             for obj in s3_objs {
                 if let Some(obj_key) = obj.key {
-                    if obj_key.contains(obj_name) {
+                    if obj_key.contains(hash) {
                         // Duplicate chunk found, return true
                         return Ok(true);
                     }
