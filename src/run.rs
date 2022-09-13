@@ -289,18 +289,8 @@ impl Run {
 
         // Check if all file chunks are already in S3
         // to avoid overwite and needless upload
-        let chunks_map = chunk_file(&file);
-        let bar: Bar = progress.lock().await.bar(
-            file_len.try_into()?,
-            format!(
-                "{}-{} ⇉ uploading '{}'",
-                job.name,
-                self.id,
-                f.path.display().to_string().cyan(),
-            ),
-        );
-
         let mut chunks_missing: u64 = 0;
+        let chunks_map = chunk_file(&file);
         for (chunk, _) in chunks_map.iter() {
             match &job.provider {
                 KipProviders::S3(s3) => {
@@ -340,6 +330,16 @@ impl Run {
             // Arc clone progress bar
             let progress = Arc::clone(&progress);
             let progress_cancel = Arc::clone(&progress);
+            // Create progress bar
+            let bar: Bar = progress.lock().await.bar(
+                file_len.try_into()?,
+                format!(
+                    "{}-{} ⇉ uploading '{}'",
+                    job.name,
+                    self.id,
+                    f.path.display().to_string().cyan(),
+                ),
+            );
 
             // Upload to the provider for this job
             // Either S3, or USB
@@ -831,7 +831,7 @@ mod tests {
         let test_result = read(tmp_dir.path().join("test.txt"));
         assert!(test_result.is_ok());
         let exists = Path::new(&tmp_dir.path().join("test.txt")).exists();
-        assert_eq!(exists, true);
+        assert!(exists);
         // Destroy temp dir
         let dir_result = tmp_dir.close();
         assert!(dir_result.is_ok())
@@ -869,7 +869,7 @@ mod tests {
         let exists_result = file_result.unwrap().metadata();
         assert!(exists_result.is_ok());
         let exists = exists_result.unwrap().is_file();
-        assert_eq!(exists, true);
+        assert!(exists);
         // Destroy temp dir
         let dir_result = tmp_dir.close();
         assert!(dir_result.is_ok())
@@ -888,7 +888,7 @@ mod tests {
         let exists_result = file_result.unwrap().metadata();
         assert!(exists_result.is_ok());
         let exists = exists_result.unwrap().is_file();
-        assert_eq!(exists, true);
+        assert!(exists);
         // Destroy temp dir
         let dir_result = tmp_dir.close();
         assert!(dir_result.is_ok())
