@@ -191,8 +191,8 @@ impl Job {
         unimplemented!();
     }
 
-    // Get correct number of files in job (not just...
-    // the len of 'files')
+    /// Get correct number of files in job (not just...
+    /// the len of 'files' Vec)
     pub fn get_files_amt(&self) -> Result<u64> {
         let mut correct_files_num: u64 = 0;
         for f in self.files.iter() {
@@ -211,6 +211,7 @@ impl Job {
         Ok(correct_files_num)
     }
 
+    /// Read each file in the job and store their SHA256 hashes
     async fn get_file_hashes(&mut self) -> Result<()> {
         for f in self.files.iter_mut() {
             // File
@@ -375,8 +376,19 @@ mod tests {
     async fn test_get_file_hashes() {
         let provider = KipProviders::S3(KipS3::new("test1", Region::new("us-east-1".to_owned())));
         let mut j = Job::new("testing1", provider);
-        j.files.push(KipFile::new(PathBuf::from("test/vandy.jpg")));
-        j.files.push(KipFile::new(PathBuf::from("test/random.txt")));
+        if cfg!(windows) {
+            // Windows
+            j.files.push(KipFile::new(PathBuf::from(
+                r"$GITHUB_WORKSPACE\test\vandy.jpg",
+            )));
+            j.files.push(KipFile::new(PathBuf::from(
+                r"$GITHUB_WORKSPACE\test\random.txt",
+            )));
+        } else {
+            // Unix, Mac, Linux, etc
+            j.files.push(KipFile::new(PathBuf::from("test/vandy.jpg")));
+            j.files.push(KipFile::new(PathBuf::from("test/random.txt")));
+        }
         let hash_result = j.get_file_hashes().await;
         assert!(hash_result.is_ok());
         assert_eq!(
