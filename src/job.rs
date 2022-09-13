@@ -298,7 +298,7 @@ impl Job {
         Ok(())
     }
 
-    /// Reset AWS env vars to nil
+    /// Reset provider env vars to nil
     pub fn zeroize_provider_env_vars(&self) {
         match &self.provider {
             KipProviders::S3(_) => {
@@ -376,18 +376,16 @@ mod tests {
     async fn test_get_file_hashes() {
         let provider = KipProviders::S3(KipS3::new("test1", Region::new("us-east-1".to_owned())));
         let mut j = Job::new("testing1", provider);
-        if cfg!(windows) {
-            // Windows
-            j.files.push(KipFile::new(PathBuf::from(
-                r"$GITHUB_WORKSPACE\test\vandy.jpg",
-            )));
-            j.files.push(KipFile::new(PathBuf::from(
-                r"$GITHUB_WORKSPACE\test\random.txt",
-            )));
-        } else {
+        if !cfg!(windows) {
             // Unix, Mac, Linux, etc
             j.files.push(KipFile::new(PathBuf::from("test/vandy.jpg")));
             j.files.push(KipFile::new(PathBuf::from("test/random.txt")));
+        } else {
+            // Windows
+            j.files
+                .push(KipFile::new(PathBuf::from(r".\test\vandy.jpg")));
+            j.files
+                .push(KipFile::new(PathBuf::from(r".\test\random.txt")));
         }
         let hash_result = j.get_file_hashes().await;
         assert!(hash_result.is_ok());

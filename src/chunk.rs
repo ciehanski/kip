@@ -61,7 +61,11 @@ mod tests {
 
     #[test]
     fn test_chunk_single_chunk_file() {
-        let content_result = read("test/random.txt");
+        if !cfg!(windows) {
+            let content_result = read("test/random.txt");
+        } else {
+            let content_result = read("test/random.txt");
+        }
         assert!(content_result.is_ok());
         let contents = content_result.unwrap();
         let chunk_hmap = chunk_file(&contents);
