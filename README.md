@@ -20,7 +20,7 @@ Backups and restores are functional in the current state. I'm still heavily
 modifying the API and configuration files, though. Upgrade paths will be provded
 when necessary.
 
-## Features:
+## Features
 
 - Backups are fully encrypted w/ XChaCha20Poly1305
 - zstd for backup compression
