@@ -142,13 +142,14 @@ impl KipProvider for KipUsb {
         Ok(())
     }
 
-    async fn contains(&self, job_id: Uuid, obj_name: &str) -> Result<bool> {
+    async fn contains(&self, job_id: Uuid, hash: &str) -> Result<bool> {
         // Check S3 for duplicates of chunk
         let file_objs = self.list_all(job_id).await?;
         // If the S3 bucket is empty, no need to check for duplicate chunks
         if !file_objs.is_empty() {
             for obj in file_objs {
-                if obj.path == Path::new(obj_name) {
+                if obj.hash == hash {
+                    // Duplicate chunk found, return true
                     return Ok(true);
                 }
             }
@@ -159,7 +160,7 @@ impl KipProvider for KipUsb {
     async fn list_all(&self, job_id: Uuid) -> Result<Vec<Self::Item>> {
         let mut kfs = Vec::<KipFile>::new();
         let path_fmt = format!("{}/{}/chunks/", self.root_path.display(), job_id);
-        let path = Path::new(&path_fmt);
+        let path = Path::new(&path_fmt).canonicalize()?;
         for entry in WalkDir::new(path).follow_links(true) {
             let entry = entry?;
             // If a directory, skip
@@ -167,7 +168,7 @@ impl KipProvider for KipUsb {
                 continue;
             }
             // Is a file, create KipFile and pusht to vec
-            let entry_kf = KipFile::new(entry.path().to_path_buf());
+            let entry_kf = KipFile::new(entry.path().canonicalize()?);
             kfs.push(entry_kf);
         }
         Ok(kfs)
