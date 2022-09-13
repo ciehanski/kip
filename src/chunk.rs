@@ -61,13 +61,20 @@ mod tests {
 
     #[test]
     fn test_chunk_single_chunk_file() {
+        let mut contents = vec![];
         if !cfg!(windows) {
+            // Unix, Mac, Linux, etc
             let content_result = read("test/random.txt");
+            assert!(content_result.is_ok());
+            let mut cr = content_result.unwrap();
+            contents.append(&mut cr);
         } else {
-            let content_result = read("test/random.txt");
+            // Windows
+            let content_result = read(r".\test\random.txt");
+            assert!(content_result.is_ok());
+            let mut cr = content_result.unwrap();
+            contents.append(&mut cr);
         }
-        assert!(content_result.is_ok());
-        let contents = content_result.unwrap();
         let chunk_hmap = chunk_file(&contents);
         assert_eq!(chunk_hmap.len(), 1);
         for (c, _) in chunk_hmap.iter() {
