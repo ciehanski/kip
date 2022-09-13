@@ -177,7 +177,6 @@ impl KipProvider for KipGdrive {
         if !gdrive_objs.is_empty() {
             for obj in gdrive_objs {
                 if let Some(gd_name) = obj.name {
-                    println!("{gd_name}");
                     if gd_name == obj_name {
                         // Duplicate chunk found, return true
                         return Ok(true);
