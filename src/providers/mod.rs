@@ -36,7 +36,7 @@ pub trait KipProvider {
     ) -> Result<(Vec<FileChunk>, u64)>;
     async fn download(&self, source: &str, secret: &str) -> Result<Vec<u8>>;
     async fn delete(&self, remote_path: &str) -> Result<()>;
-    async fn contains(&self, job: Uuid, obj_name: &str) -> Result<bool>;
+    async fn contains(&self, job: Uuid, hash: &str) -> Result<bool>;
     async fn list_all(&self, job: Uuid) -> Result<Vec<Self::Item>>;
 }
 
