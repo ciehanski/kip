@@ -64,13 +64,13 @@ mod tests {
         let mut contents = vec![];
         if !cfg!(windows) {
             // Unix, Mac, Linux, etc
-            let content_result = read("test/random.txt");
+            let content_result = read("test/vandy.jpg");
             assert!(content_result.is_ok());
             let mut cr = content_result.unwrap();
             contents.append(&mut cr);
         } else {
             // Windows
-            let content_result = read(r".\test\random.txt");
+            let content_result = read(r".\test\vandy.jpg");
             assert!(content_result.is_ok());
             let mut cr = content_result.unwrap();
             contents.append(&mut cr);
@@ -80,7 +80,7 @@ mod tests {
         for (c, _) in chunk_hmap.iter() {
             assert_eq!(
                 c.hash,
-                "44b4cdaf713dfaf961dedb34f07e15604f75eb049c83067ab35bf388b369dbf3".to_string()
+                "97ad4887a60dfa689660bad732f92a2871dedf97add169267c43e2955415488d".to_string()
             );
         }
     }

@@ -379,13 +379,13 @@ mod tests {
         if !cfg!(windows) {
             // Unix, Mac, Linux, etc
             j.files.push(KipFile::new(PathBuf::from("test/vandy.jpg")));
-            j.files.push(KipFile::new(PathBuf::from("test/random.txt")));
+            j.files.push(KipFile::new(PathBuf::from("test/vandy.jpg")));
         } else {
             // Windows
             j.files
                 .push(KipFile::new(PathBuf::from(r".\test\vandy.jpg")));
             j.files
-                .push(KipFile::new(PathBuf::from(r".\test\random.txt")));
+                .push(KipFile::new(PathBuf::from(r".\test\vandy.jpg")));
         }
         let hash_result = j.get_file_hashes().await;
         assert!(hash_result.is_ok());
@@ -395,7 +395,7 @@ mod tests {
         );
         assert_eq!(
             j.files[1].hash,
-            "44b4cdaf713dfaf961dedb34f07e15604f75eb049c83067ab35bf388b369dbf3"
+            "97ad4887a60dfa689660bad732f92a2871dedf97add169267c43e2955415488d"
         )
     }
 
