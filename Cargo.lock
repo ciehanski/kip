@@ -1261,23 +1261,40 @@ dependencies = [
 ]
 
 [[package]]
-name = "google-drive3"
-version = "4.0.1+20220225"
+name = "google-apis-common"
+version = "4.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e5cc6d1fdf7d7632b8e51aa2ed8253429234531a9488c5385ff5bc25cf52c6b"
+checksum = "b048c92bf667f5efbf741357ac4e5c3b2e62c9d3fe4e7df421d2350fb60e407e"
 dependencies = [
+ "http",
+ "hyper",
+ "itertools",
+ "mime",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower-service",
+ "yup-oauth2",
+]
+
+[[package]]
+name = "google-drive3"
+version = "4.0.4+20220225"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a980c35b7ce5e6644aca7247ca58d0b2a7f60dd81e2b0c2068d56c052fcd8197"
+dependencies = [
+ "anyhow",
+ "google-apis-common",
  "http",
  "hyper",
  "hyper-rustls 0.23.0",
  "itertools",
  "mime",
  "serde",
- "serde_derive",
  "serde_json",
  "tokio",
  "tower-service",
  "url 1.7.2",
- "yup-oauth2",
 ]
 
 [[package]]
