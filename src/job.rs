@@ -2,9 +2,10 @@
 // Copyright (c) 2022 Ryan Ciehanski <ryan@ciehanski.com>
 //
 
+use crate::compress::KipCompressOpts;
 use crate::crypto::{keyring_delete_secret, keyring_get_secret};
 use crate::providers::{KipProvider, KipProviders};
-use crate::run::Run;
+use crate::run::{open_file, Run};
 use anyhow::{bail, Context, Result};
 use chrono::prelude::*;
 use colored::*;
@@ -14,6 +15,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fmt::{Debug, Display};
 use std::path::{Path, PathBuf};
+use tracing::instrument;
 use uuid::Uuid;
 use walkdir::WalkDir;
 
@@ -22,8 +24,7 @@ pub struct Job {
     pub id: Uuid,
     pub name: String,
     pub provider: KipProviders,
-    pub compress: bool,
-    // pub retention_policy: Frotate,
+    pub compress: KipCompressOpts,
     pub files: Vec<KipFile>,
     pub files_amt: u64,
     pub excluded_files: Vec<PathBuf>,
@@ -39,20 +40,35 @@ pub struct Job {
 }
 
 impl Job {
-    pub fn new<S: Into<String>>(name: S, provider: KipProviders) -> Self {
+    pub fn new<S: Into<String>>(
+        name: S,
+        provider: KipProviders,
+        compress: KipCompressOpts,
+    ) -> Self {
+        // Initialize default UTC DateTime variable
+        let time_init = match Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).earliest() {
+            Some(t) => t,
+            None => {
+                let ndt = NaiveDate::from_ymd_opt(1970, 1, 1)
+                    .unwrap()
+                    .and_hms_opt(0, 0, 0)
+                    .unwrap();
+                DateTime::<Utc>::from_utc(ndt, Utc)
+            }
+        };
         Self {
             id: Uuid::new_v4(),
             name: name.into(),
             provider,
-            compress: true,
+            compress,
             files: Vec::new(),
             files_amt: 0,
             excluded_files: Vec::new(),
             excluded_file_types: Vec::new(),
             runs: HashMap::new(),
             bytes_amt_provider: 0,
-            first_run: Utc.ymd(1970, 1, 1).and_hms(0, 0, 0),
-            last_run: Utc.ymd(1970, 1, 1).and_hms(0, 0, 0),
+            first_run: time_init,
+            last_run: time_init,
             total_runs: 0,
             last_status: KipStatus::NEVER_RUN,
             created: Utc::now(),
@@ -60,7 +76,15 @@ impl Job {
         }
     }
 
-    pub async fn start_run(&mut self, secret: &str) -> Result<()> {
+    pub fn provider_name(&self) -> &str {
+        match &self.provider {
+            KipProviders::S3(s3) => &s3.aws_bucket,
+            KipProviders::Usb(usb) => &usb.name,
+            KipProviders::Gdrive(_) => "Google Drive",
+        }
+    }
+
+    pub async fn start_run(&mut self, secret: &str, follow_links: bool) -> Result<()> {
         // Check and confirm that job is not paused
         if self.paused {
             bail!(
@@ -70,15 +94,57 @@ impl Job {
             )
         }
         // Create new run
-        let mut r = Run::new(self.total_runs + 1);
+        let mut r = Run::new(
+            self.total_runs + 1,
+            KipCompressOpts::new(
+                self.compress.enabled,
+                self.compress.alg,
+                self.compress.level,
+            ),
+        );
         // Set job metadata
         self.last_status = KipStatus::IN_PROGRESS;
-        // Set AWS env vars for backup
+        // Set provider env vars for backup
         self.set_provider_env_vars()?;
         // Tell the run to start uploading
-        match r.start(self.to_owned(), secret.to_string()).await {
-            Ok(_) => {}
+        match r
+            .start(self.to_owned(), secret.to_string(), follow_links)
+            .await
+        {
+            Ok(_) => {
+                // Reset provider env vars to nil
+                self.zeroize_provider_env_vars();
+                // Set job status equal to run's status
+                self.last_status = r.status;
+                // Print all logs from run
+                if self.last_status != KipStatus::OK_SKIPPED {
+                    self.bytes_amt_provider += r.bytes_uploaded;
+                    // Get new file hashes
+                    self.get_file_hashes(follow_links).await?;
+                    // Add run to job only if anything was uploaded
+                    self.runs.insert(r.id.try_into()?, r);
+                    self.total_runs += 1;
+                    self.last_run = Utc::now();
+                    if self.first_run.format("%Y-%m-%d %H:%M:%S").to_string()
+                        == "1970-01-01 00:00:00"
+                    {
+                        self.first_run = Utc::now();
+                    }
+                    println!(
+                        "{} job '{}' completed uploading to '{}' successfully.",
+                        "[OK]".green(),
+                        &self.name,
+                        self.get_provider(),
+                    );
+                } else {
+                    println!("{} skipped, no file changes detected.", "[INFO]".yellow());
+                }
+            }
             Err(e) => {
+                // Reset provider env vars to nil
+                self.zeroize_provider_env_vars();
+                // Set job status equal to run's status
+                self.bytes_amt_provider += r.bytes_uploaded;
                 // Set job status
                 self.last_status = KipStatus::ERR;
                 // Add run to job
@@ -88,47 +154,15 @@ impl Job {
                 if self.first_run.format("%Y-%m-%d %H:%M:%S").to_string() == "1970-01-01 00:00:00" {
                     self.first_run = Utc::now();
                 }
-                // Reset provider env vars to nil
-                self.zeroize_provider_env_vars();
+                println!(
+                    "{} job '{}' upload to '{}' failed.",
+                    "[ERR]".red(),
+                    &self.name,
+                    self.get_provider(),
+                );
                 bail!("{e}.")
             }
         };
-        // Reset provider env vars to nil
-        self.zeroize_provider_env_vars();
-        // Set job status
-        self.last_status = r.status;
-        // Print all logs from run
-        if !r.logs.is_empty() {
-            self.bytes_amt_provider += r.bytes_uploaded;
-            // Get new file hashes
-            self.get_file_hashes().await?;
-            // Add run to job only if anything was uploaded
-            self.runs.insert(r.id.try_into()?, r);
-            self.total_runs += 1;
-            self.last_run = Utc::now();
-            if self.first_run.format("%Y-%m-%d %H:%M:%S").to_string() == "1970-01-01 00:00:00" {
-                self.first_run = Utc::now();
-            }
-            let provider = match &self.provider {
-                KipProviders::S3(s3) => s3.aws_bucket.to_owned(),
-                KipProviders::Usb(usb) => usb.name.to_owned(),
-                KipProviders::Gdrive(gdrive) => {
-                    if let Some(pf) = gdrive.parent_folder.to_owned() {
-                        format!("My Drive/{pf}")
-                    } else {
-                        "My Drive/".to_string()
-                    }
-                }
-            };
-            println!(
-                "{} job '{}' completed uploading to '{}' successfully.",
-                "[OK]".green(),
-                &self.name,
-                provider,
-            );
-        } else {
-            println!("{} no file changes detected.", "[INFO]".yellow());
-        }
         Ok(())
     }
 
@@ -140,10 +174,23 @@ impl Job {
             self.set_provider_env_vars()?;
             // Tell the run to start uploading
             match r.restore(self, secret, output_folder).await {
-                Ok(_) => (),
+                Ok(_) => {
+                    println!(
+                        "{} job '{}' completed restore from '{}' successfully.",
+                        "[OK]".green(),
+                        &self.name,
+                        self.get_provider(),
+                    )
+                }
                 Err(e) => {
                     // Reset provider env vars to nil
                     self.zeroize_provider_env_vars();
+                    println!(
+                        "{} job '{}' restore from '{}' failed.",
+                        "[ERR]".red(),
+                        &self.name,
+                        self.get_provider(),
+                    );
                     bail!("{e}.")
                 }
             };
@@ -156,6 +203,7 @@ impl Job {
         Ok(())
     }
 
+    #[instrument]
     pub async fn purge_file(&mut self, f: &str) -> Result<()> {
         // Find all the runs that contain this file's chunks
         // and remove them from S3.
@@ -163,8 +211,10 @@ impl Job {
         self.set_provider_env_vars()?;
         for run in self.runs.iter() {
             for chunk in run.1.files_changed.iter() {
-                if chunk.local_path == fpath {
-                    let chunk_path = format!("{}/chunks/{}.chunk", self.id, chunk.hash);
+                if chunk.file.path == fpath {
+                    // TODO: change this chunk_path based on the
+                    // job's provider as the paths will differ
+                    let chunk_path = format!("{}/chunks/{}.chunk", self.id, chunk.file.hash);
                     // Delete
                     match &self.provider {
                         KipProviders::S3(s3) => {
@@ -193,13 +243,12 @@ impl Job {
 
     /// Get correct number of files in job (not just...
     /// the len of 'files' Vec)
-    pub fn get_files_amt(&self) -> Result<u64> {
+    pub fn get_files_amt(&self, follow_links: bool) -> Result<u64> {
         let mut correct_files_num: u64 = 0;
         for f in self.files.iter() {
             if f.path.exists() && f.path.is_dir() {
-                for entry in WalkDir::new(&f.path) {
-                    let entry = entry?;
-                    if entry.path().is_dir() {
+                for entry in WalkDir::new(&f.path).follow_links(follow_links) {
+                    if entry?.path().is_dir() {
                         continue;
                     }
                     correct_files_num += 1;
@@ -212,22 +261,31 @@ impl Job {
     }
 
     /// Read each file in the job and store their SHA256 hashes
-    async fn get_file_hashes(&mut self) -> Result<()> {
-        for f in self.files.iter_mut() {
+    async fn get_file_hashes(&mut self, follow_links: bool) -> Result<()> {
+        for kf in self.files.iter_mut() {
             // File
-            if f.path.metadata()?.is_file() {
-                let c = tokio::fs::read(&f.path).await?;
-                f.hash = hex_digest(Algorithm::SHA256, &c);
+            if kf.is_file()? {
+                let file = open_file(&kf.path, kf.len.try_into()?).await?;
+                kf.hash = hex_digest(Algorithm::SHA256, &file);
             } else {
                 // Directory
-                for entry in WalkDir::new(&f.path) {
+                let mut dir_hash_str = String::new();
+                for entry in WalkDir::new(&kf.path).follow_links(follow_links) {
                     let entry = entry?;
                     if entry.metadata()?.is_dir() {
                         continue;
                     }
-                    let c = tokio::fs::read(&entry.path()).await?;
-                    f.hash = hex_digest(Algorithm::SHA256, &c);
+                    let f = open_file(entry.path(), entry.metadata()?.len()).await?;
+                    let hash = hex_digest(Algorithm::SHA256, &f);
+                    // Push the subfile's path (if renamed, moved)
+                    dir_hash_str.push_str(&entry.path().display().to_string());
+                    // Push the subfile's hash (if updated, changed)
+                    dir_hash_str.push_str(&hash);
                 }
+                // Hash the colletion of dir's files and their hashes
+                let dir_hash = hex_digest(Algorithm::SHA256, dir_hash_str.as_bytes());
+                // Set the "file"'s dir hash
+                kf.hash = dir_hash;
             }
         }
         Ok(())
@@ -266,32 +324,20 @@ impl Job {
     }
 
     pub fn delete_keyring_entries(&self) -> Result<()> {
-        let job_secret = keyring_get_secret(&format!("com.ciehanski.kip.{}", self.name))
-            .context("couldnt get job secret from keyring")?;
-        let job_secret = job_secret.trim_end();
-        keyring_delete_secret(job_secret)?;
+        keyring_delete_secret(&format!("com.ciehanski.kip.{}", self.name))
+            .context("couldnt delete job secret from keyring")?;
         match self.provider {
             KipProviders::S3(_) => {
-                let s3acc = keyring_get_secret(&format!("com.ciehanski.kip.{}.s3acc", self.name))
-                    .context("couldnt get s3acc from keyring")?;
-                let s3acc = s3acc.trim_end();
-                let s3sec = keyring_get_secret(&format!("com.ciehanski.kip.{}.s3sec", self.name))
-                    .context("couldn't get s3sec from keyring")?;
-                let s3sec = s3sec.trim_end();
-                keyring_delete_secret(s3acc)?;
-                keyring_delete_secret(s3sec)?;
+                keyring_delete_secret(&format!("com.ciehanski.kip.{}.s3acc", self.name))
+                    .context("couldn't delete S3 access key from keyring")?;
+                keyring_delete_secret(&format!("com.ciehanski.kip.{}.s3sec", self.name))
+                    .context("couldn't delete S3 secret key from keyring")?;
             }
             KipProviders::Gdrive(_) => {
-                let gdrive_id =
-                    keyring_get_secret(&format!("com.ciehanski.kip.{}.gdriveid", self.name))
-                        .context("couldnt get gdriveid from keyring")?;
-                let gdrive_id = gdrive_id.trim_end();
-                let gdrive_sec =
-                    keyring_get_secret(&format!("com.ciehanski.kip.{}.gdrivesec", self.name))
-                        .context("couldn't get gdrivesec from keyring")?;
-                let gdrive_sec = gdrive_sec.trim_end();
-                keyring_delete_secret(gdrive_id)?;
-                keyring_delete_secret(gdrive_sec)?;
+                keyring_delete_secret(&format!("com.ciehanski.kip.{}.gdriveid", self.name))
+                    .context("couldnt delete Gdrive access ID from keyring")?;
+                keyring_delete_secret(&format!("com.ciehanski.kip.{}.gdrivesec", self.name))
+                    .context("couldn't delete Gdrive secret key from keyring")?;
             }
             _ => {}
         }
@@ -313,12 +359,27 @@ impl Job {
             _ => {}
         }
     }
+
+    fn get_provider(&self) -> String {
+        match &self.provider {
+            KipProviders::S3(s3) => s3.aws_bucket.to_owned(),
+            KipProviders::Usb(usb) => usb.name.to_owned(),
+            KipProviders::Gdrive(gdrive) => {
+                if let Some(pf) = gdrive.parent_folder.to_owned() {
+                    format!("My Drive/{pf}")
+                } else {
+                    "My Drive/".to_string()
+                }
+            }
+        }
+    }
 }
 
 #[allow(non_camel_case_types)]
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum KipStatus {
     OK,
+    OK_SKIPPED,
     ERR,
     WARN,
     IN_PROGRESS,
@@ -329,6 +390,7 @@ impl Display for KipStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             KipStatus::OK => write!(f, "{}", "OK".green()),
+            KipStatus::OK_SKIPPED => write!(f, "{}", "OK_SKIPPED".green()),
             KipStatus::ERR => write!(f, "{}", "ERR".red()),
             KipStatus::WARN => write!(f, "{}", "WARN".yellow()),
             KipStatus::IN_PROGRESS => write!(f, "{}", "IN_PROGRESS".cyan()),
@@ -341,53 +403,103 @@ impl Display for KipStatus {
 pub struct KipFile {
     pub path: PathBuf,
     pub hash: String,
+    pub len: usize,
 }
 
 impl KipFile {
-    pub fn new(path: PathBuf) -> Self {
-        KipFile {
-            path,
+    pub fn new<P: AsRef<Path>>(path: P) -> Result<Self> {
+        // Get len at time of creation
+        let len: usize = path.as_ref().metadata()?.len().try_into()?;
+        Ok(KipFile {
+            path: path.as_ref().to_path_buf(),
             hash: String::new(),
+            len,
+        })
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn path_str(&self) -> String {
+        self.path.display().to_string()
+    }
+
+    pub fn is_empty(&self) -> Result<bool> {
+        if self.len == 0 {
+            return Ok(true);
         }
+        Ok(false)
+    }
+
+    pub fn is_file(&self) -> Result<bool> {
+        Ok(self.path.metadata()?.is_file())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::crypto::keyring_set_secret;
+    use super::*;
+    use crate::compress::{KipCompressAlg, KipCompressLevel, KipCompressOpts};
     use crate::providers::s3::KipS3;
     use aws_sdk_s3::Region;
-
-    use super::*;
 
     #[test]
     fn test_get_files_amt() {
         let provider = KipProviders::S3(KipS3::new("test1", Region::new("us-east-1".to_owned())));
-        let mut j = Job::new("testing1", provider);
-        j.files.push(KipFile::new(PathBuf::from("test/vandy.jpg")));
-        j.files.push(KipFile::new(PathBuf::from("test/vandy.jpg")));
-        j.files.push(KipFile::new(PathBuf::from("test/vandy.jpg")));
-        j.files.push(KipFile::new(PathBuf::from("test/random.txt")));
-        assert!(j.get_files_amt().is_ok());
-        assert_eq!(j.get_files_amt().unwrap(), 4)
+        let mut j = Job::new(
+            "testing1",
+            provider,
+            KipCompressOpts::new(true, KipCompressAlg::Zstd, KipCompressLevel::Best),
+        );
+        j.files
+            .push(KipFile::new(PathBuf::from("test/vandy.jpg")).unwrap());
+        j.files
+            .push(KipFile::new(PathBuf::from("test/vandy.jpg")).unwrap());
+        j.files
+            .push(KipFile::new(PathBuf::from("test/vandy.jpg")).unwrap());
+        j.files
+            .push(KipFile::new(PathBuf::from("test/random.txt")).unwrap());
+        assert!(j.get_files_amt(false).is_ok());
+        assert_eq!(j.get_files_amt(false).unwrap(), 4)
+    }
+
+    #[test]
+    fn test_get_files_amt_dir() {
+        let provider = KipProviders::S3(KipS3::new("test1", Region::new("us-east-1".to_owned())));
+        let mut j = Job::new(
+            "testing1",
+            provider,
+            KipCompressOpts::new(true, KipCompressAlg::Zstd, KipCompressLevel::Best),
+        );
+        j.files
+            .push(KipFile::new(PathBuf::from("test/test_dir/")).unwrap());
+        assert!(j.get_files_amt(false).is_ok());
+        assert_eq!(j.get_files_amt(false).unwrap(), 4)
     }
 
     #[tokio::test]
     async fn test_get_file_hashes() {
         let provider = KipProviders::S3(KipS3::new("test1", Region::new("us-east-1".to_owned())));
-        let mut j = Job::new("testing1", provider);
+        let mut j = Job::new(
+            "testing1",
+            provider,
+            KipCompressOpts::new(true, KipCompressAlg::Zstd, KipCompressLevel::Best),
+        );
         if !cfg!(windows) {
             // Unix, Mac, Linux, etc
-            j.files.push(KipFile::new(PathBuf::from("test/vandy.jpg")));
-            j.files.push(KipFile::new(PathBuf::from("test/vandy.jpg")));
+            j.files
+                .push(KipFile::new(PathBuf::from("test/vandy.jpg")).unwrap());
+            j.files
+                .push(KipFile::new(PathBuf::from("test/vandy.jpg")).unwrap());
         } else {
             // Windows
             j.files
-                .push(KipFile::new(PathBuf::from(r".\test\vandy.jpg")));
+                .push(KipFile::new(PathBuf::from(r".\test\vandy.jpg")).unwrap());
             j.files
-                .push(KipFile::new(PathBuf::from(r".\test\vandy.jpg")));
+                .push(KipFile::new(PathBuf::from(r".\test\vandy.jpg")).unwrap());
         }
-        let hash_result = j.get_file_hashes().await;
+        let hash_result = j.get_file_hashes(false).await;
         assert!(hash_result.is_ok());
         assert_eq!(
             j.files[0].hash,
@@ -399,21 +511,28 @@ mod tests {
         )
     }
 
-    #[ignore]
-    #[test]
-    fn test_set_get_keyring() {
-        let provider = KipProviders::S3(KipS3::new(
-            "kip_test_bucket",
-            Region::new("us-east-1".to_owned()),
-        ));
-        let j = Job::new("testing2", provider);
-        let result = keyring_set_secret(&j.name, "hunter2");
-        assert!(result.is_ok());
-        let get_result = keyring_get_secret(&j.name);
-        assert!(get_result.is_ok());
-        assert_eq!(get_result.unwrap(), "hunter2");
-        // Cleanup
-        let cleanup = keyring_delete_secret(&j.name);
-        assert!(cleanup.is_ok())
+    #[tokio::test]
+    async fn test_get_file_hashes_dir() {
+        let provider = KipProviders::S3(KipS3::new("test1", Region::new("us-east-1".to_owned())));
+        let mut j = Job::new(
+            "testing1",
+            provider,
+            KipCompressOpts::new(true, KipCompressAlg::Zstd, KipCompressLevel::Best),
+        );
+        if !cfg!(windows) {
+            // Unix, Mac, Linux, etc
+            j.files
+                .push(KipFile::new(PathBuf::from("test/test_dir/")).unwrap());
+        } else {
+            // Windows
+            j.files
+                .push(KipFile::new(PathBuf::from(r".\test\test_dir\")).unwrap());
+        }
+        let hash_result = j.get_file_hashes(false).await;
+        assert!(hash_result.is_ok());
+        assert_eq!(
+            j.files[0].hash,
+            "8767ed60eaadc8c8c3e946d5b699985401c83928a899b930240be368d0ffa87b"
+        )
     }
 }

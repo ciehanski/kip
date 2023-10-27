@@ -11,10 +11,12 @@ use comfy_table::presets::UTF8_FULL;
 use comfy_table::*;
 use dialoguer::{theme::ColorfulTheme, Confirm, Password, Select};
 use kip::cli::{Cli, Subcommands};
+use kip::compress::KipCompressOpts;
 use kip::conf::KipConf;
 use kip::crypto::{keyring_get_secret, keyring_set_secret};
 use kip::job::{Job, KipFile, KipStatus};
 use kip::providers::{gdrive::KipGdrive, s3::KipS3, usb::KipUsb, KipProviders};
+use kip::smtp::{send_email, KipEmail};
 use kip::terminate;
 use pretty_bytes::converter::convert;
 use std::io::prelude::*;
@@ -22,28 +24,30 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use sysinfo::{DiskExt, System, SystemExt};
 use tokio::runtime::Builder;
+use tracing::{info, span, warn, Level};
 
 fn main() {
     // Get config and metadata file
     let (cfg_file, md_file) = KipConf::new().unwrap_or_else(|e| {
-        terminate!(
-            5,
-            "{} failed to get kip configuration: {}.",
-            "[ERR]".red(),
-            e
-        );
+        terminate!(5, "{} failed to get kip configuration: {e}.", "[ERR]".red());
     });
     let cfg = &*Arc::clone(&cfg_file);
     let md = Arc::clone(&md_file);
 
     // Custom Tokio Runtime
-    let runtime = Builder::new_current_thread()
+    let runtime = Builder::new_multi_thread()
         .worker_threads(cfg.settings.worker_threads)
         .thread_name("kip")
         .enable_all()
+        .on_thread_start(|| {
+            info!("thread started");
+        })
+        .on_thread_stop(|| {
+            info!("thread stopped");
+        })
         .build()
         .unwrap_or_else(|e| {
-            terminate!(11, "unable to initialize kip runtime: {}.", e);
+            terminate!(11, "unable to initialize kip runtime: {e}.");
         });
 
     // Get subcommands and args
@@ -51,16 +55,66 @@ fn main() {
     let _debug = args.debug;
 
     runtime.block_on(async {
-        // Match user input command
+        // Setup logging and tracing
+        // SAFETY: safe to unwrap proj_dir since KipConf::new()
+        // creates the directory if it does not exist
+        let proj_dir = directories::ProjectDirs::from("com", "ciehanski", "kip").unwrap();
+        let log_file = tracing_appender::rolling::daily(proj_dir.config_dir(), "kip.log");
+        let (log_non_blocking, _guard) = tracing_appender::non_blocking(log_file);
+        tracing_subscriber::fmt()
+            .with_thread_names(true)
+            .with_thread_ids(true)
+            .with_max_level(cfg.settings.debug_level.parse())
+            .with_writer(log_non_blocking)
+            .try_init()
+            .unwrap_or_else(|e| {
+                eprintln!("{} unable to initialize kip tracing: {e}", "[ERR]".red());
+            });
+
+        // Prompt for SMTP password to be stored in keyring
+        // if SMTP settings have been modified/configured in cfg
+        if cfg.settings.email_notification {
+            match keyring_get_secret("com.ciehanski.kip.smtp") {
+                Ok(_) => {}
+                Err(e) => match e {
+                    // Only prompt if there is currently no entry in keyring
+                    keyring::Error::NoEntry => {
+                        // Get SMTP password from user input
+                        let smtp_pass = Password::new()
+                            .with_prompt("Please provide the SMTP authentication password")
+                            .interact()
+                            .expect("[ERR] failed to create encryption secret prompt.");
+                        // Store SMTP password onto local OS keyring
+                        keyring_set_secret("com.ciehanski.kip.smtp", &smtp_pass).unwrap_or_else(|e| {
+                            terminate!(
+                                10,
+                                "{} failed to push SMTP password onto keyring: {e}.",
+                                "[ERR]".red(),
+                            );
+                        });
+                    }
+                    _ => {
+                        terminate!(
+                            11,
+                            "{} failed to get SMTP secret from keyring: {e}.",
+                            "[ERR]".red()
+                        );
+                    }
+                },
+            }
+        }
+
+        // Execute user input command
         match args.subcommands {
             // Create a new job
             Subcommands::Init { job } => {
+                let _trace = span!(Level::DEBUG, "KIP_INIT").entered();
                 let mut md = md.write().await;
                 // Ensure that job does not already exist with
                 // the provided name.
                 for (j, _) in md.jobs.iter() {
                     if j == &job {
-                        terminate!(17, "{} job '{}' already exists.", "[ERR]".red(), job);
+                        terminate!(17, "{} job '{job}' already exists.", "[ERR]".red());
                     }
                 }
                 // Get secret from user input
@@ -69,13 +123,12 @@ fn main() {
                     .interact()
                     .expect("[ERR] failed to create encryption secret prompt.");
                 // Store secret onto local OS keyring
-                keyring_set_secret(&format!("com.ciehanski.kip.{}", &job), &secret).unwrap_or_else(
+                keyring_set_secret(&format!("com.ciehanski.kip.{job}"), &secret).unwrap_or_else(
                     |e| {
                         terminate!(
                             5,
-                            "{} failed to push secret onto keyring: {}.",
+                            "{} failed to push secret onto keyring: {e}.",
                             "[ERR]".red(),
-                            e
                         );
                     },
                 );
@@ -100,37 +153,31 @@ fn main() {
                             .expect("[ERR] failed to read S3 access key from stdin.");
                         // Store S3 access key onto local OS keyring
                         keyring_set_secret(
-                            &format!("com.ciehanski.kip.{}.s3acc", &job),
+                            &format!("com.ciehanski.kip.{job}.s3acc"),
                             &s3_acc_key,
                         )
                         .unwrap_or_else(|e| {
                             terminate!(
                                 5,
-                                "{} failed to push S3 access key onto keyring: {}.",
+                                "{} failed to push S3 access key onto keyring: {e}.",
                                 "[ERR]".red(),
-                                e
                             );
                         });
                         // Get S3 secret key from user input
-                        print!("Please provide the S3 secret key: ");
-                        std::io::stdout()
-                            .flush()
-                            .expect("[ERR] failed to flush stdout.");
-                        let mut s3_sec_key = String::new();
-                        std::io::stdin()
-                            .read_line(&mut s3_sec_key)
-                            .expect("[ERR] failed to read S3 secret key from stdin.");
+                        let s3_sec_key = Password::new()
+                            .with_prompt("Please provide the S3 secret key")
+                            .interact()
+                            .expect("[ERR] failed to create S3 secret key prompt.");
                         // Store S3 secret key onto local OS keyring
                         keyring_set_secret(
-                            &format!("com.ciehanski.kip.{}.s3sec", &job),
+                            &format!("com.ciehanski.kip.{job}.s3sec"),
                             &s3_sec_key,
                         )
                         .unwrap_or_else(|e| {
                             terminate!(
                                 5,
-                                "{} failed to push S3 secret key onto keyring: {}.",
+                                "{} failed to push S3 secret key onto keyring: {e}.",
                                 "[ERR]".red(),
-                                e
                             );
                         });
                         // Get S3 bucket name from user input
@@ -156,7 +203,15 @@ fn main() {
                             s3_bucket_name.trim_end(),
                             Region::new(s3_region.trim_end().to_owned()),
                         ));
-                        let new_job = Job::new(&job, provider);
+                        let new_job = Job::new(
+                            &job,
+                            provider,
+                            KipCompressOpts::new(
+                                cfg.settings.compression,
+                                cfg.settings.compression_alg,
+                                cfg.settings.compress_level
+                            ),
+                        );
                         // Push new job in config
                         md.jobs.insert(job.clone(), new_job);
                     }
@@ -173,15 +228,14 @@ fn main() {
                         );
                         // Store Google Drive client ID onto local OS keyring
                         keyring_set_secret(
-                            &format!("com.ciehanski.kip.{}.gdriveid", &job),
+                            &format!("com.ciehanski.kip.{job}.gdriveid"),
                             &gdrive_client_id,
                         )
                         .unwrap_or_else(|e| {
                             terminate!(
                                 5,
-                                "{} failed to push Google Drive client ID onto keyring: {}.",
+                                "{} failed to push Google Drive client ID onto keyring: {e}.",
                                 "[ERR]".red(),
-                                e
                             );
                         });
                         // Get Google Drive client secret from user input
@@ -195,15 +249,14 @@ fn main() {
                         );
                         // Store Google Drive client ID onto local OS keyring
                         keyring_set_secret(
-                            &format!("com.ciehanski.kip.{}.gdrivesec", &job),
+                            &format!("com.ciehanski.kip.{job}.gdrivesec"),
                             &gdrive_client_sec,
                         )
                         .unwrap_or_else(|e| {
                             terminate!(
                                 5,
-                                "{} failed to push Google Drive client ID onto keyring: {}.",
+                                "{} failed to push Google Drive client ID onto keyring: {e}.",
                                 "[ERR]".red(),
-                                e
                             );
                         });
                         // Get GDrive parent folder from user input
@@ -218,7 +271,15 @@ fn main() {
                         // Create the new job
                         let provider =
                             KipProviders::Gdrive(KipGdrive::new(Some(gdrive_folder.trim_end())));
-                        let new_job = Job::new(&job, provider);
+                        let new_job = Job::new(
+                            &job,
+                            provider,
+                            KipCompressOpts::new(
+                                cfg.settings.compression,
+                                cfg.settings.compression_alg,
+                                cfg.settings.compress_level
+                            ),
+                        );
                         // Push new job in config
                         md.jobs.insert(job.clone(), new_job);
                     }
@@ -255,7 +316,7 @@ fn main() {
                                 .items(&disks_str)
                                 .default(0)
                                 .interact()
-                                .expect("[ERR] unable to create USB selection menu");
+                                .unwrap_or_else(|_| { terminate!(1, "[ERR] unable to create USB selection menu") });
                         // Create the new job
                         let provider = KipProviders::Usb(KipUsb::new(
                             disks[provider_selection]
@@ -269,7 +330,15 @@ fn main() {
                             disks[provider_selection].total_space(),
                             disks[provider_selection].available_space(),
                         ));
-                        let new_job = Job::new(&job, provider);
+                        let new_job = Job::new(
+                            &job,
+                            provider,
+                            KipCompressOpts::new(
+                                cfg.settings.compression,
+                                cfg.settings.compression_alg,
+                                cfg.settings.compress_level
+                            ),
+                        );
                         // Push new job in config
                         md.jobs.insert(job.clone(), new_job);
                     }
@@ -279,32 +348,28 @@ fn main() {
                 }
                 // Store new job in config
                 match md.save() {
-                    Ok(_) => println!("{} job '{}' successfully created.", "[OK]".green(), job),
-                    Err(e) => terminate!(
-                        7,
-                        "{} failed to save kip configuration: {}",
-                        "[ERR]".red(),
-                        e
-                    ),
+                    Ok(_) => println!("{} job '{job}' successfully created.", "[OK]".green()),
+                    Err(e) => {
+                        terminate!(7, "{} failed to save kip configuration: {e}", "[ERR]".red())
+                    }
                 }
             }
 
             // Add more files or directories to job
             Subcommands::Add { job, file_path } => {
+                let _trace = span!(Level::DEBUG, "KIP_ADD").entered();
                 let mut md = md.write().await;
-                // Check if file or directory exists
-                for f in &file_path {
-                    if !Path::new(f).exists() {
-                        terminate!(2, "{} '{}' doesn't exist.", "[ERR]".red(), f);
-                    }
-                }
                 // Get job from argument provided
                 let j = md.jobs.get_mut(&job).unwrap_or_else(|| {
-                    terminate!(2, "{} job '{}' doesn't exist.", "[ERR]".red(), &job);
+                    terminate!(2, "{} job '{job}' doesn't exist.", "[ERR]".red());
                 });
-                // Check if files are excluded by this job
-                for jf in &j.excluded_files {
-                    for f in &file_path {
+                for f in &file_path {
+                    // Check if path exists
+                    if !Path::new(f).exists() {
+                        terminate!(2, "{} '{f}' doesn't exist.", "[ERR]".red());
+                    }
+                    // Check if files are excluded by this job
+                    for jf in &j.excluded_files {
                         if jf
                             == &Path::new(f)
                                 .canonicalize()
@@ -312,17 +377,14 @@ fn main() {
                         {
                             terminate!(
                                 17,
-                                "{} file(s) are excluded on job '{}'.",
+                                "{} file(s) are excluded on job '{job}'.",
                                 "[ERR]".red(),
-                                &job
                             );
                         }
                     }
-                }
-                // Check if files already exist on job
-                // to avoid duplication.
-                for jf in &j.files {
-                    for f in &file_path {
+                    // Check if files already exist on job
+                    // to avoid duplication.
+                    for jf in &j.files {
                         if jf.path
                             == Path::new(f)
                                 .canonicalize()
@@ -330,9 +392,8 @@ fn main() {
                         {
                             terminate!(
                                 17,
-                                "{} file(s) already exist on job '{}'.",
+                                "{} file(s) already exist on job '{job}'.",
                                 "[ERR]".red(),
-                                &job
                             );
                         }
                     }
@@ -345,31 +406,25 @@ fn main() {
                         PathBuf::from(f)
                             .canonicalize()
                             .expect("[ERR] unable to canonicalize path."),
-                    ));
+                    ).expect("[ERR] unable to create KipFile."));
                 }
                 // Get new files amount for job
-                j.files_amt = j.get_files_amt().unwrap_or_else(|e| {
+                j.files_amt = j.get_files_amt(cfg.settings.follow_symlinks).unwrap_or_else(|e| {
                     terminate!(
                         6,
-                        "{} failed to get file amounts for {}: {}.",
+                        "{} failed to get file amounts for {job}: {e}.",
                         "[ERR]".red(),
-                        &job,
-                        e
                     );
                 });
                 // Save changes to config file
                 match md.save() {
                     Ok(_) => println!(
-                        "{} files successfully added to job '{}'.",
+                        "{} files successfully added to job '{job}'.",
                         "[OK]".green(),
-                        &job
                     ),
-                    Err(e) => terminate!(
-                        7,
-                        "{} failed to save kip configuration: {}",
-                        "[ERR]".red(),
-                        e
-                    ),
+                    Err(e) => {
+                        terminate!(7, "{} failed to save kip configuration: {e}", "[ERR]".red())
+                    }
                 }
             }
 
@@ -379,10 +434,11 @@ fn main() {
                 file_path,
                 purge,
             } => {
+                let _trace = span!(Level::DEBUG, "KIP_REMOVE").entered();
                 let mut md = md.write().await;
                 // Get job from argument provided
                 let j = md.jobs.get_mut(&job).unwrap_or_else(|| {
-                    terminate!(2, "{} job '{}' doesn't exist.", "[ERR]".red(), &job);
+                    terminate!(2, "{} job '{job}' doesn't exist.", "[ERR]".red());
                 });
                 // Confirm correct secret from user input
                 confirm_secret(&j.name);
@@ -417,38 +473,32 @@ fn main() {
                                     j.purge_file(&f).await.unwrap_or_else(|e| {
                                         terminate!(
                                             21,
-                                            "{} failed to remove files from S3 for {}: {}.",
+                                            "{} failed to remove files from S3 for {job}: {e}.",
                                             "[ERR]".red(),
-                                            &job,
-                                            e
                                         );
                                     });
                                 }
                             } else {
                                 terminate!(
                                     2,
-                                    "{} job '{}' does not contain '{}'.",
+                                    "{} job '{}' does not contain '{f}'.",
                                     "[ERR]".red(),
                                     j.name,
-                                    f,
                                 );
                             };
                         }
                         // Update files amt for job
-                        j.files_amt = j.get_files_amt().unwrap_or_else(|e| {
+                        j.files_amt = j.get_files_amt(cfg.settings.follow_symlinks).unwrap_or_else(|e| {
                             terminate!(
                                 6,
-                                "{} failed to get file amounts for {}: {}.",
+                                "{} failed to get file amounts for {job}: {e}.",
                                 "[ERR]".red(),
-                                &job,
-                                e
                             );
                         });
                         // Success
                         println!(
-                            "{} files successfully removed from job '{}'.",
+                            "{} files successfully removed from job '{job}'.",
                             "[OK]".green(),
-                            &job
                         );
                     }
                     None => {
@@ -457,19 +507,14 @@ fn main() {
                             // -f and -r were not provided, delete the job
                             .expect("unable to delete keyring entries for job");
                         md.jobs.remove(&job);
-                        println!("{} job '{}' successfully removed.", "[OK]".green(), &job)
+                        println!("{} job '{job}' successfully removed.", "[OK]".green())
                     }
                 }
                 // Save changes to config file
                 match md.save() {
                     Ok(_) => {}
                     Err(e) => {
-                        terminate!(
-                            7,
-                            "{} failed to save kip configuration: {}",
-                            "[ERR]".red(),
-                            e
-                        );
+                        terminate!(7, "{} failed to save kip configuration: {e}", "[ERR]".red());
                     }
                 }
             }
@@ -480,60 +525,53 @@ fn main() {
                 file_path,
                 extensions,
             } => {
+                let _trace = span!(Level::DEBUG, "KIP_EXCLUDE").entered();
                 let mut md = md.write().await;
                 // Get job from argument provided
                 let j = md.jobs.get_mut(&job).unwrap_or_else(|| {
-                    terminate!(2, "{} job '{}' doesn't exist.", "[ERR]".red(), &job);
+                    terminate!(2, "{} job '{job}' doesn't exist.", "[ERR]".red());
                 });
                 // Confirm correct secret from user input
                 confirm_secret(&j.name);
                 // Confirm if files or exentions were provided
                 if let Some(fp) = file_path {
-                    // Check if file or directory exists
                     for f in &fp {
+                        // Check if file or directory exists
                         if !Path::new(f).exists() {
-                            terminate!(2, "{} '{}' doesn't exist.", "[ERR]".red(), f);
+                            terminate!(2, "{} '{f}' doesn't exist.", "[ERR]".red());
                         }
-                    }
-                    // Check if this file is being backed up by the job
-                    // cancel excluding it if so
-                    for jf in &j.files {
-                        for f in &fp {
+                        // Check if this file is being backed up by the job
+                        // cancel excluding it if so
+                        for jf in &j.files {
                             let f_path = Path::new(f)
                                 .canonicalize()
                                 .expect("[ERR] unable to canonicalize path.");
                             if jf.path == f_path {
                                 terminate!(
                                     17,
-                                    "{} unable to exclude files that are being backed up by '{}'.",
+                                    "{} unable to exclude files that are being backed up by '{job}'.",
                                     "[ERR]".red(),
-                                    &job
                                 );
                             }
                         }
-                    }
-                    // Check if files are already excluded from job
-                    // to avoid duplication.
-                    for jf in &j.excluded_files {
-                        for f in &fp {
+                        // Check if files are already excluded from job
+                        // to avoid duplication.
+                        for jf in &j.excluded_files {
                             let jf_path = Path::new(jf)
                                 .canonicalize()
-                                .expect("[err] unable to canonicalize path.");
+                                .expect("[ERR] unable to canonicalize path.");
                             let f_path = Path::new(f)
                                 .canonicalize()
-                                .expect("[err] unable to canonicalize path.");
+                                .expect("[ERR] unable to canonicalize path.");
                             if jf_path == f_path {
                                 terminate!(
                                     17,
-                                    "{} file(s) already excluded from job '{}'.",
-                                    "[err]".red(),
-                                    &job
+                                    "{} file(s) already excluded from job '{job}'.",
+                                    "[ERR]".red(),
                                 );
                             }
                         }
-                    }
-                    // Push exclusions to job
-                    for f in fp {
+                        // Push exclusions to job
                         j.excluded_files.push(
                             PathBuf::from(f)
                                 .canonicalize()
@@ -543,75 +581,125 @@ fn main() {
                 } else if let Some(e) = extensions {
                     // Check if extensions are already excluded from job
                     // to avoid duplication.
-                    for jext in &j.excluded_file_types {
-                        for ext in &e {
+                    for ext in &e {
+                        for jext in &j.excluded_file_types {
                             if jext == ext {
                                 terminate!(
                                     17,
-                                    "{} file(s) already excluded from job '{}'.",
-                                    "[err]".red(),
-                                    &job
+                                    "{} file(s) already excluded from job '{job}'.",
+                                    "[ERR]".red(),
                                 );
                             }
                         }
-                    }
-                    // Push excluded extensions to job
-                    for ext in e {
-                        j.excluded_file_types.push(ext);
+                        // Push excluded extensions to job
+                        j.excluded_file_types.push(ext.to_string());
                     }
                 } else {
-                    terminate!(99, "no file path or extensions provided");
+                    terminate!(99, "no file path or extensions provided.");
                 }
                 // Save changes to config file
                 match md.save() {
-                    Ok(_) => println!("{} exclusions added to job '{}'.", "[OK]".green(), &job),
+                    Ok(_) => println!("{} exclusions added to job '{job}'.", "[OK]".green()),
                     Err(e) => terminate!(
                         7,
-                        "{} failed to save kip configuration: {}",
+                        "{} failed to save kip configuration: {e}",
                         "[ERR]".red(),
-                        e
                     ),
                 }
             }
 
             // Start a job's upload
             Subcommands::Push { job } => {
+                let _trace = span!(Level::DEBUG, "KIP_PUSH").entered();
                 let mut md = md.write().await;
                 // Get job from argument provided
                 let j = md.jobs.get_mut(&job).unwrap_or_else(|| {
-                    terminate!(2, "{} job '{}' doesn't exist.", "[ERR]".red(), &job);
+                    terminate!(2, "{} job '{job}' doesn't exist.", "[ERR]".red());
                 });
                 // Get new files amount for job
-                j.files_amt = j.get_files_amt().unwrap_or_else(|e| {
+                j.files_amt = j.get_files_amt(cfg.settings.follow_symlinks).unwrap_or_else(|e| {
                     terminate!(
                         6,
-                        "{} failed to get file amounts for {}: {}.",
+                        "{} failed to get file amounts for {job}: {e}.",
                         "[ERR]".red(),
-                        &job,
-                        e
                     );
                 });
                 // Confirm correct secret from user input
                 let secret = confirm_secret(&j.name);
+                // Check if battery level is charged enough
+                if !cfg.settings.run_on_low_battery {
+                    match check_battery() {
+                        Ok(_) => {},
+                        Err(e) => terminate!(29, "{} {e}", "[ERR]".red()),
+                    }
+                }
                 // Upload all files in a seperate thread
-                match j.start_run(&secret).await {
-                    Ok(_) => {}
-                    Err(e) => terminate!(
-                        8,
-                        "{} job '{}' upload to '{}' failed: {}",
-                        "[ERR]".red(),
-                        &job,
-                        &j.provider.s3().unwrap().aws_bucket,
-                        e
-                    ),
+                match j
+                    .start_run(
+                        &secret,
+                        cfg.settings.follow_symlinks,
+                    )
+                    .await
+                {
+                    Ok(_) => {
+                        // Send success email if setting enabled
+                        if cfg.settings.email_notification {
+                            if let Some(run) = j.runs.get(&j.runs.len()) {
+                                // Craft the email
+                                let email = KipEmail {
+                                    title: format!(
+                                        "[ok] {}-{} completed successfully",
+                                        j.name, run.id
+                                    ),
+                                    alert_type: kip::smtp::KipAlertType::Success,
+                                    alert_logs: run.logs.to_owned(),
+                                };
+                                // Send
+                                match send_email(cfg.smtp_config.to_owned(), email).await {
+                                    Ok(_) => {},
+                                    Err(e) => {
+                                        warn!("error sending email notification: {e}");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        // Send error email if setting enabled
+                        if cfg.settings.email_notification {
+                            if let Some(run) = j.runs.get(&j.runs.len()) {
+                                // Craft the email
+                                let email = KipEmail {
+                                    title: format!(
+                                        "[fail] {}-{} completed with errors",
+                                        j.name, run.id
+                                    ),
+                                    alert_type: kip::smtp::KipAlertType::Error,
+                                    alert_logs: run.logs.to_owned(),
+                                };
+                                // Send
+                                match send_email(cfg.smtp_config.to_owned(), email).await {
+                                    Ok(_) => {},
+                                    Err(e) => {
+                                        warn!("error sending email notification: {e}");
+                                    }
+                                }
+                            }
+                        }
+                        terminate!(
+                            8,
+                            "{} job '{job}' upload to '{}' failed: {e}",
+                            "[ERR]".red(),
+                            j.provider_name(),
+                        );
+                    }
                 }
                 // Save changes to config file
                 md.save().unwrap_or_else(|e| {
                     terminate!(
                         7,
-                        "{} failed to save kip configuration: {}",
+                        "{} failed to save kip configuration: {e}",
                         "[ERR]".red(),
-                        e
                     );
                 });
             }
@@ -622,10 +710,11 @@ fn main() {
                 run,
                 output_folder,
             } => {
+                let _trace = span!(Level::DEBUG, "KIP_PULL").entered();
                 let mut md = md.write().await;
                 // Get job from argument provided
                 let j = md.jobs.get_mut(&job).unwrap_or_else(|| {
-                    terminate!(2, "{} job '{}' doesn't exist.", "[ERR]".red(), &job);
+                    terminate!(2, "{} job '{job}' doesn't exist.", "[ERR]".red());
                 });
                 // Confirm correct secret from user input
                 let secret = confirm_secret(&j.name);
@@ -633,7 +722,8 @@ fn main() {
                 let output_folder = output_folder.unwrap_or_else(|| {
                     terminate!(2, "{} invalid output folder provided.", "[ERR]".red());
                 });
-                let dmd = std::fs::metadata(&output_folder).unwrap();
+                let dmd = std::fs::metadata(&output_folder)
+                    .expect("[ERR] unable to gather output folder metadata");
                 if !dmd.is_dir() || output_folder.is_empty() {
                     terminate!(
                         2,
@@ -641,92 +731,184 @@ fn main() {
                         "[ERR]".red()
                     );
                 }
+                // Check if battery level is charged enough
+                if !cfg.settings.run_on_low_battery {
+                    match check_battery() {
+                        Ok(_) => {},
+                        Err(e) => terminate!(29, "{} {e}", "[ERR]".red()),
+                    }
+                }
                 // Run the restore
                 match j.start_restore(run, &secret, &output_folder).await {
-                    Ok(_) => {
-                        println!("{} job '{}' restored successfully.", "[OK]".green(), &job,);
-                    }
+                    Ok(_) => {}
                     Err(e) => {
-                        terminate!(2, "{} job '{}' restore failed: {}", "[ERR]".red(), &job, e);
+                        terminate!(2, "{} {e}", "[ERR]".red());
                     }
                 };
                 // Save changes to config file
                 md.save().unwrap_or_else(|e| {
                     terminate!(
                         7,
-                        "{} failed to save kip configuration: {}",
+                        "{} failed to save kip configuration: {e}",
                         "[ERR]".red(),
-                        e
                     );
                 });
             }
 
             // Pauses a job and future runs
             Subcommands::Pause { job } => {
+                let _trace = span!(Level::DEBUG, "KIP_PAUSE").entered();
                 let mut md = md.write().await;
                 // Get job from argument provided
                 let j = md.jobs.get_mut(&job).unwrap_or_else(|| {
-                    terminate!(2, "{} job '{}' doesn't exist.", "[ERR]".red(), &job);
+                    terminate!(2, "{} job '{job}' doesn't exist.", "[ERR]".red());
                 });
                 // Confirm correct secret from user input
                 let _ = confirm_secret(&j.name);
                 // Set job to paused
                 j.paused = true;
+                // Send paused alert email if setting enabled
+                if cfg.settings.email_notification {
+                    // Craft the email
+                    let email = KipEmail {
+                        title: format!(
+                            "[info] {} has been paused",
+                            j.name
+                        ),
+                        alert_type: kip::smtp::KipAlertType::Information,
+                        alert_logs: vec![],
+                    };
+                    // Send
+                    match send_email(cfg.smtp_config.to_owned(), email).await {
+                        Ok(_) => {},
+                        Err(e) => {
+                            warn!("error sending email notification: {e}");
+                        }
+                    }
+                }
                 // Save changes to config file
                 md.save().unwrap_or_else(|e| {
                     terminate!(
                         7,
-                        "{} failed to save kip configuration: {}",
+                        "{} failed to save kip configuration: {e}",
                         "[ERR]".red(),
-                        e
                     );
                 });
             }
 
             // Resumes a job and future runs
             Subcommands::Resume { job } => {
+                let _trace = span!(Level::DEBUG, "KIP_RESUME").entered();
                 let mut md = md.write().await;
                 // Get job from argument provided
                 let j = md.jobs.get_mut(&job).unwrap_or_else(|| {
-                    terminate!(2, "{} job '{}' doesn't exist.", "[ERR]".red(), &job);
+                    terminate!(2, "{} job '{job}' doesn't exist.", "[ERR]".red());
                 });
                 // Confirm correct secret from user input
                 let secret = confirm_secret(&j.name);
                 // Set set to !paused
                 j.paused = false;
+                // Send resumed alert email if setting enabled
+                if cfg.settings.email_notification {
+                    // Craft the email
+                    let email = KipEmail {
+                        title: format!(
+                            "[info] {} has been resumed",
+                            j.name
+                        ),
+                        alert_type: kip::smtp::KipAlertType::Information,
+                        alert_logs: vec![],
+                    };
+                    // Send
+                    match send_email(cfg.smtp_config.to_owned(), email).await {
+                        Ok(_) => {},
+                        Err(e) => {
+                            warn!("error sending email notification: {e}");
+                        }
+                    }
+                }
                 // Run a manual upload
-                match j.start_run(&secret).await {
-                    Ok(_) => {}
-                    Err(e) => terminate!(
-                        8,
-                        "{} job '{}' upload to '{}' failed: {}",
-                        "[ERR]".red(),
-                        &job,
-                        &j.provider.s3().unwrap().aws_bucket,
-                        e
-                    ),
+                match j
+                    .start_run(
+                        &secret,
+                        cfg.settings.follow_symlinks,
+                    )
+                    .await
+                {
+                    Ok(_) => {
+                        // Send success email if setting enabled
+                        if cfg.settings.email_notification {
+                            if let Some(run) = j.runs.get(&j.runs.len()) {
+                                // Craft the email
+                                let email = KipEmail {
+                                    title: format!(
+                                        "[ok] {}-{} completed successfully",
+                                        j.name, run.id
+                                    ),
+                                    alert_type: kip::smtp::KipAlertType::Success,
+                                    alert_logs: run.logs.to_owned(),
+                                };
+                                // Send
+                                match send_email(cfg.smtp_config.to_owned(), email).await {
+                                    Ok(_) => {},
+                                    Err(e) => {
+                                        warn!("error sending email notification: {e}");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        // Send error email if setting enabled
+                        if cfg.settings.email_notification {
+                            if let Some(run) = j.runs.get(&j.runs.len()) {
+                                // Craft the email
+                                let email = KipEmail {
+                                    title: format!(
+                                        "[fail] {}-{} completed with errors",
+                                        j.name, run.id
+                                    ),
+                                    alert_type: kip::smtp::KipAlertType::Error,
+                                    alert_logs: run.logs.to_owned(),
+                                };
+                                // Send
+                                match send_email(cfg.smtp_config.to_owned(), email).await {
+                                    Ok(_) => {},
+                                    Err(e) => {
+                                        warn!("error sending email notification: {e}");
+                                    }
+                                }
+                            }
+                        }
+                        terminate!(
+                            8,
+                            "{} job '{job}' upload to '{}' failed: {e}",
+                            "[ERR]".red(),
+                            j.provider_name(),
+                        );
+                    }
                 }
                 // Save changes to config file
                 md.save().unwrap_or_else(|e| {
                     terminate!(
                         7,
-                        "{} failed to save kip configuration: {}",
+                        "{} failed to save kip configuration: {e}",
                         "[ERR]".red(),
-                        e
                     );
                 });
             }
 
             // Abort a running job
             Subcommands::Abort { job } => {
+                let _trace = span!(Level::DEBUG, "KIP_ABORT").entered();
                 let mut md = md.write().await;
                 // Get job from argument provided
                 let j = md.jobs.get_mut(&job).unwrap_or_else(|| {
-                    terminate!(2, "{} job '{}' doesn't exist.", "[ERR]".red(), &job);
+                    terminate!(2, "{} job '{job}' doesn't exist.", "[ERR]".red());
                 });
                 // Confirm removal
                 if !Confirm::new()
-                    .with_prompt(format!("Are you sure you want to abort '{}'?", &job))
+                    .with_prompt(format!("Are you sure you want to abort '{job}'?"))
                     .interact()
                     .unwrap_or(false)
                 {
@@ -742,6 +924,7 @@ fn main() {
             // List all jobs
             // This function is messy. Should probably cleanup.
             Subcommands::Status { job, run } => {
+                let _trace = span!(Level::DEBUG, "KIP_STATUS").entered();
                 let md = md.read().await;
                 // Create the table
                 let mut table = Table::new();
@@ -749,7 +932,7 @@ fn main() {
                     .load_preset(UTF8_FULL)
                     .apply_modifier(UTF8_ROUND_CORNERS)
                     .set_content_arrangement(ContentArrangement::Dynamic);
-                if job == None && run == None {
+                if job.is_none() && run.is_none() {
                     // Create the header row
                     table.set_header(&vec![
                         "Name",
@@ -788,13 +971,14 @@ fn main() {
                     }
                     // Print the job table
                     println!("{table}");
-                } else if job != None && run == None {
-                    let j = md.jobs.get(job.as_ref().unwrap()).unwrap_or_else(|| {
+                } else if job.is_some() && run.is_none() {
+                    let job = job.unwrap_or_default();
+                    let j = md.jobs.get(&job).unwrap_or_else(|| {
                         terminate!(
                             2,
                             "{} job '{}' doesn't exist.",
                             "[ERR]".red(),
-                            &job.clone().unwrap()
+                            &job,
                         );
                     });
                     // For each job, add a row
@@ -879,11 +1063,11 @@ fn main() {
                             table.set_header(&vec![
                                 "Name",
                                 "ID",
-                                "Google Drive Folder ID",
+                                "Gdrive Folder ID",
                                 "Selected Files",
                                 "Total Runs",
                                 "Last Run",
-                                "Bytes (Provider)",
+                                "Bytes (Gdrive)",
                                 "Status",
                             ]);
                             let parent_folder = match &gdrive.parent_folder {
@@ -905,22 +1089,26 @@ fn main() {
                     }
                     // Print the job table
                     println!("{table}");
-                } else if job != None && run != None {
-                    let j = md.jobs.get(job.as_ref().unwrap()).unwrap_or_else(|| {
+                } else if job.is_some() && run.is_some() {
+                    let job = job.unwrap_or_default();
+                    let j = md.jobs.get(&job).unwrap_or_else(|| {
                         terminate!(
                             2,
                             "{} job '{}' doesn't exist.",
                             "[ERR]".red(),
-                            &job.clone().unwrap()
+                            &job,
                         );
                     });
-                    let r = j.runs.get(&run.unwrap()).unwrap_or_else(|| {
+                    let rid = run.unwrap_or_else(|| {
+                        terminate!(1, "{} unable to find run from provided ID.", "[ERR]".red());
+                    });
+                    let r = j.runs.get(&rid).unwrap_or_else(|| {
                         terminate!(
                             2,
                             "{} run '{}' doesn't exist for job '{}'.",
                             "[ERR]".red(),
-                            &run.unwrap(),
-                            &job.clone().unwrap(),
+                            rid,
+                            &job,
                         );
                     });
                     match &j.provider {
@@ -974,7 +1162,7 @@ fn main() {
                             // Create the header row
                             table.set_header(&vec![
                                 "Name",
-                                "Google Drive Folder ID",
+                                "Gdrive Folder ID",
                                 "Chunks Uploaded",
                                 "Bytes Uploaded",
                                 "Run Time",
@@ -1024,6 +1212,7 @@ fn main() {
 
             // Get the status of a job
             Subcommands::Daemon {} => {
+                let _trace = span!(Level::DEBUG, "KIP_DAEMON").entered();
                 // Arc Clone reference to KipConf
                 let daemon_cfg = Arc::clone(&cfg_file);
                 let daemon_md = Arc::clone(&md_file);
@@ -1033,9 +1222,8 @@ fn main() {
                     // Duration of time to wait between each poll
                     let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
                     loop {
-                        // Get KipConf each loop iteration as to not cause
-                        // contention on the RwLock. Lock is dropped at end
-                        // of each loop
+                        // Get KipConf each loop iteration as to not cause contention
+                        // on the RwLock. Lock is dropped at end of each loop
                         let mut daemon_md = daemon_md.write().await;
                         // Check if backup needs to be run for all jobs
                         let _ = daemon_md.poll_backup_jobs(&daemon_cfg).await;
@@ -1057,14 +1245,13 @@ fn confirm_secret(job_name: &str) -> String {
         .interact()
         .expect("[ERR] failed to create encryption secret prompt.");
     let keyring_secret =
-        match keyring_get_secret(format!("com.ciehanski.kip.{}", job_name).trim_end()) {
+        match keyring_get_secret(format!("com.ciehanski.kip.{job_name}").trim_end()) {
             Ok(ks) => ks,
             Err(e) => {
                 terminate!(
                     5,
-                    "{} failed to get secret from keyring: {}",
+                    "{} failed to get secret from keyring: {e}",
                     "[ERR]".red(),
-                    e
                 );
             }
         };
@@ -1074,12 +1261,71 @@ fn confirm_secret(job_name: &str) -> String {
     secret
 }
 
+#[cfg(not(windows))]
+pub fn is_hidden(entry: &walkdir::DirEntry) -> bool {
+    entry
+        .file_name()
+        .to_str()
+        .map(|s| s.starts_with('.'))
+        .unwrap_or(false)
+}
+
+#[cfg(windows)]
+fn is_hidden(entry: &walkdir::DirEntry) -> bool {
+    use std::os::windows::prelude::*;
+
+    let file_path = entry.file_name().to_str().unwrap();
+    let metadata = fs::metadata(file_path).unwrap();
+    let attributes = metadata.file_attributes();
+    if (attributes & 0x2) > 0 {
+        true
+    } else {
+        false
+    }
+}
+
 fn print_status(status: KipStatus) -> comfy_table::Cell {
     match status {
         KipStatus::OK => Cell::new("OK").fg(comfy_table::Color::Green),
+        KipStatus::OK_SKIPPED => Cell::new("OK_SKIPPED").fg(comfy_table::Color::Green),
         KipStatus::ERR => Cell::new("ERR").fg(comfy_table::Color::Red),
         KipStatus::WARN => Cell::new("WARN").fg(comfy_table::Color::Yellow),
         KipStatus::IN_PROGRESS => Cell::new("IN_PROGRESS").fg(comfy_table::Color::Cyan),
         KipStatus::NEVER_RUN => Cell::new("NEVER_RUN").add_attribute(Attribute::Bold),
     }
+}
+
+fn check_battery() -> anyhow::Result<()> {
+    if let Ok(manager) = battery::Manager::new() {
+        match manager.batteries() {
+            Ok(mut maybe_batteries) => {
+                match maybe_batteries.next() {
+                    Some(Ok(battery)) => {
+                        // Convert batter ratio to f64
+                        let charge = f64::from(
+                            battery
+                                .state_of_charge()
+                                .get::<battery::units::ratio::ratio>(),
+                        );
+                        // Fail if battery level is at or below 20%
+                        if charge < 0.20 {
+                            anyhow::bail!(
+                                "unable to run. your battery level needs to be above 20%."
+                            )
+                        }
+                    }
+                    Some(Err(e)) => {
+                        anyhow::bail!("unable to gather battery information: {e}.");
+                    }
+                    None => { /* Do nothing if no battery detected */ }
+                };
+            }
+            Err(e) => {
+                anyhow::bail!("unable to gather battery information: {e}.");
+            }
+        };
+    } else {
+        anyhow::bail!("unable to gather battery information.")
+    }
+    Ok(())
 }

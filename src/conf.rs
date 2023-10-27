@@ -2,8 +2,10 @@
 // Copyright (c) 2022 Ryan Ciehanski <ryan@ciehanski.com>
 //
 
+use crate::compress::{KipCompressAlg, KipCompressLevel};
 use crate::crypto::keyring_get_secret;
 use crate::job::Job;
+use crate::smtp::{KipSmtpOpts, KipSmtpProtocols};
 use anyhow::{bail, Result};
 use chrono::prelude::*;
 use directories::ProjectDirs;
@@ -11,45 +13,63 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{create_dir, read, File, OpenOptions};
 use std::io::prelude::*;
-use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
 const KIP_CONF: &str = "kip.toml";
 const KIP_METADATA: &str = "kip_metadata.json";
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct KipConf {
     /// Uses TOML
     pub settings: KipConfOpts,
+    pub smtp_config: KipSmtpOpts,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct KipConfOpts {
-    /// How often you would like kip to run automatic
-    /// backup jobs
+    /// How often (in minutes) you would like kip to run automatic
+    /// background uploads of backup jobs.
     pub backup_interval: u64,
-    /// By default, kip will only dedupe within
-    /// a job's remote folder, not the whole provider's repository
-    pub dedupe_repo: bool,
-    /// Specifiy how many threads you want kip to run on
+    /// Specifiy how many threads you want kip to run on.
+    /// default: number of device CPUs
     pub worker_threads: usize,
+    /// Enable compression of backups.
+    /// default: true
+    pub compression: bool,
+    /// default: Zstd
+    pub compression_alg: KipCompressAlg,
+    /// Sets the level of compression of the algorithm
+    /// default: Best
+    pub compress_level: KipCompressLevel,
     /// Specifiy if you would like kip to store secrets in the
-    /// default OS keyring or a BYOK custom keyring service
+    /// default OS keyring or a BYOK custom keyring service.
     /// default: true
     pub os_keyring: bool,
+    /// Indicate if you would like hidden files to be skipped
+    /// during backup.
+    /// default: false
     pub skip_hidden_files: bool,
+    /// Indicate if you would like kip to backup symlink targeted
+    /// files during backup.
+    /// default: true
     pub follow_symlinks: bool,
-    pub bandwidth_limit: u64,
+    /// Enable or disable email noticiations on job runs.
+    /// default false
     pub email_notification: bool,
+    /// Whether you would like kip to continue running
+    /// backups if your device's battery is low.
+    /// default: false
+    pub run_on_low_battery: bool,
+    /// Sets the verbosity of debug logs.
+    /// default: Info
+    pub debug_level: KipDebugLevel,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct KipConfMetadata {
     /// This is where we store all the jobs' and runs'
-    /// metadata. This is seperate from the conf file because
-    /// it can get quite messy and hard to read.
-    /// Uses JSON
+    /// metadata. This is seperate from the conf file
     pub jobs: HashMap<String, Job>,
 }
 
@@ -61,13 +81,22 @@ impl KipConf {
         KipConf {
             settings: KipConfOpts {
                 backup_interval: 60,
-                dedupe_repo: false,
                 worker_threads: num_cpus::get(),
+                compression: true,
+                compression_alg: KipCompressAlg::Zstd,
+                compress_level: KipCompressLevel::Default,
                 os_keyring: true,
                 skip_hidden_files: false,
                 follow_symlinks: true,
-                bandwidth_limit: 0,
                 email_notification: false,
+                run_on_low_battery: false,
+                debug_level: KipDebugLevel::INFO,
+            },
+            smtp_config: KipSmtpOpts {
+                username: String::from("kip@gmail.com"),
+                smtp_host: String::from("smtp.gmail.com"),
+                protocol: KipSmtpProtocols::StartTLS,
+                recipient: String::from("me@gmail.com"),
             },
         }
     }
@@ -88,8 +117,8 @@ impl KipConf {
                     return Ok((Arc::new(kc), Arc::new(RwLock::new(md))));
                 }
             }
-            // Check if $PROJECT_DIR already exists
-            if !Path::new(proj_dirs.config_dir()).exists() {
+            // Check if $PROJECT_DIR does not exist
+            if !proj_dirs.config_dir().exists() {
                 // Create new $PROJECT_DIR since it doesn't exist
                 create_dir(proj_dirs.config_dir())?;
             }
@@ -156,10 +185,32 @@ impl KipConfMetadata {
                 // the configured backup interval, start an upload run
                 let secret = keyring_get_secret(&format!("com.ciehanski.kip.{}", &j.name))?;
                 if dur_since_run_start.num_minutes() >= kc.settings.backup_interval.try_into()? {
-                    j.start_run(&secret).await?;
+                    j.start_run(&secret, kc.settings.follow_symlinks).await?;
                 }
             }
         }
         Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum KipDebugLevel {
+    INFO,
+    ERROR,
+    WARN,
+    TRACE,
+    DEBUG,
+}
+
+impl KipDebugLevel {
+    pub fn parse(&self) -> tracing::Level {
+        match &self {
+            KipDebugLevel::INFO => tracing::Level::INFO,
+            KipDebugLevel::ERROR => tracing::Level::ERROR,
+            KipDebugLevel::WARN => tracing::Level::WARN,
+            KipDebugLevel::TRACE => tracing::Level::TRACE,
+            KipDebugLevel::DEBUG => tracing::Level::DEBUG,
+        }
     }
 }

@@ -1,9 +1,9 @@
-name: CI
+name: Check
 on: [push, pull_request]
 
 jobs:
   build:
-    name: Build 
+    name: Build
     strategy:
       matrix:
         os: ["ubuntu-latest", "windows-latest", "macos-latest"]
@@ -20,48 +20,18 @@ jobs:
           override: true
 
       - name: Cache rust artifacts
-        uses: Swatinem/rust-cache@v1
+        uses: Swatinem/rust-cache@v2
 
       - name: Build kip
         uses: actions-rs/cargo@v1
         with:
-          command: build 
-
-  test:
-    name: Test
-    strategy:
-      matrix:
-        os: ["ubuntu-latest", "windows-latest", "macos-latest"]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - name: Checkout sources
-        uses: actions/checkout@v3
-
-      - name: Install stable toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
-          override: true
-
-      - name: Cache rust artifacts
-        uses: Swatinem/rust-cache@v1
-
-      - name: Build binary for test 
-        uses: actions-rs/cargo@v1
-        with:
           command: build
 
-      - name: Run cargo test
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-
   check:
-    name: Check 
+    name: Check
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repo 
+      - name: Checkout repo
         uses: actions/checkout@v3
 
       - name: Install rust stable toolchain
@@ -72,30 +42,29 @@ jobs:
           override: true
 
       - name: Cache rust artifacts
-        uses: Swatinem/rust-cache@v1
+        uses: Swatinem/rust-cache@v2
 
       - name: Run cargo check
         uses: actions-rs/cargo@v1
         with:
           command: check
 
-  rustfmt:
-    name: Rustfmt 
+  clippy:
+    name: Clippy
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout sources
+      - name: Checkout repo
         uses: actions/checkout@v3
 
       - name: Install stable toolchain
         uses: actions-rs/toolchain@v1
         with:
-          profile: minimal
           toolchain: stable
           override: true
           components: rustfmt, clippy
 
       - name: Cache rust artifacts
-        uses: Swatinem/rust-cache@v1
+        uses: Swatinem/rust-cache@v2
 
       - name: Run cargo fmt
         uses: actions-rs/cargo@v1
@@ -108,3 +77,41 @@ jobs:
         with:
           command: clippy
           args: -- -D warnings
+
+  hack:
+    runs-on: ubuntu-latest
+    name: Hack 
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Install stable toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+
+      - name: cargo install cargo-hack
+        uses: taiki-e/install-action@cargo-hack
+
+      - name: cargo hack
+        run: cargo hack --feature-powerset check --bin kip --tests
+
+  msrv:
+    name: MSRV | ${{ matrix.msrv }}
+    strategy:
+      matrix:
+        msrv: [1.56.1] # 2021 edition requires 1.56
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Install ${{ matrix.msrv }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.msrv }}
+
+      - name: cargo +${{ matrix.msrv }} check
+        run: cargo check

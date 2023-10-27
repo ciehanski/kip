@@ -8,7 +8,15 @@ updates:
     schedule:
       interval: "weekly"
       day: "sunday"
-    open-pull-requests-limit: 10
+    reviewers:
+      - "ciehanski"
+    labels:
+      - "dependencies"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "sunday"
     reviewers:
       - "ciehanski"
     labels:

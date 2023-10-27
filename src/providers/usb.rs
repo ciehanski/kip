@@ -2,11 +2,12 @@
 // Copyright (c) 2022 Ryan Ciehanski <ryan@ciehanski.com>
 //
 
+use super::KipUploadOpts;
 use crate::chunk::FileChunk;
-use crate::crypto::{decrypt, encrypt};
 use crate::job::KipFile;
 use crate::providers::KipProvider;
-use anyhow::{bail, Result};
+use crate::run::KipUploadMsg;
+use anyhow::Result;
 use async_trait::async_trait;
 use linya::{Bar, Progress};
 use memmap2::MmapOptions;
@@ -18,6 +19,7 @@ use std::sync::Arc;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
+use tracing::debug;
 use uuid::Uuid;
 use walkdir::WalkDir;
 
@@ -27,6 +29,7 @@ pub struct KipUsb {
     pub root_path: PathBuf,
     pub capacity: u64,
     pub used_capacity: u64,
+    // file_system
 }
 
 impl KipUsb {
@@ -49,87 +52,62 @@ impl KipUsb {
 impl KipProvider for KipUsb {
     type Item = KipFile;
 
-    async fn upload(
-        &self,
-        f: &Path,
-        chunks_map: HashMap<FileChunk, &[u8]>,
-        job_id: Uuid,
-        secret: &str,
+    async fn upload<'b>(
+        &mut self,
+        opts: KipUploadOpts,
+        chunks_map: HashMap<FileChunk, &'b [u8]>,
         progress: Arc<Mutex<Progress>>,
         bar: &Bar,
-    ) -> Result<(Vec<FileChunk>, u64)> {
+    ) -> Result<()> {
         // Create all parent dirs if missing
         create_dir_all(Path::new(&format!(
             "{}/{}/chunks/",
             self.root_path.display(),
-            job_id
+            opts.job_id
         )))?;
         // Upload each chunk
-        let mut chunks = vec![];
-        let mut bytes_uploaded: u64 = 0;
-        for (mut chunk, chunk_bytes) in chunks_map {
-            // Always compress before encryption
-            let compressed = crate::run::compress(chunk_bytes).await?;
-            // Encrypt chunk
-            let encrypted = match encrypt(&compressed, secret) {
-                Ok(ec) => ec,
-                Err(e) => {
-                    bail!("failed to encrypt chunk: {}.", e)
-                }
-            };
+        for (chunk, chunk_bytes) in chunks_map {
             // Get amount of bytes uploaded in this chunk
             // after compression and encryption
-            let ce_bytes_len = encrypted.len();
-            // Upload
+            let ce_bytes_len = chunk_bytes.len();
+            // Set chunk's remote path
             let usb_path = format!(
                 "{}/{}/chunks/{}.chunk",
                 self.root_path.display(),
-                job_id,
+                opts.job_id,
                 chunk.hash
             );
             // Create new file in the USB drive
             let mut cfile = File::create(usb_path).await?;
             // Copy encrypted and compressed chunk bytes into newly created
             // chunk file
-            cfile.write_all(&encrypted).await?;
-            // Push chunk onto chunks hashmap for return
-            chunk.local_path = f.canonicalize()?;
-            chunks.push(chunk);
-            // Increment progress bar for this file by one
-            // since one chunk was uploaded
-            progress.lock().await.inc_and_draw(bar, chunk_bytes.len());
-            let ce_bytes_len_u64: u64 = ce_bytes_len.try_into()?;
-            bytes_uploaded += ce_bytes_len_u64;
+            cfile.write_all(chunk_bytes).await?;
+            // Increment progress bar by chunk bytes len
+            progress.lock().await.inc_and_draw(bar, ce_bytes_len);
+            opts.msg_tx
+                .send(KipUploadMsg::BytesUploaded(ce_bytes_len.try_into()?))?;
         }
-        Ok((chunks, bytes_uploaded))
+        Ok(())
     }
 
-    async fn download(&self, f: &str, secret: &str) -> Result<Vec<u8>> {
+    async fn download(&self, file_name: &str) -> Result<Vec<u8>> {
         // Read result from S3 and convert to bytes
-        let path = Path::new(f);
-        let mut bytes = vec![];
-        if path.metadata()?.len() > (500 * 1024 * 1024) {
+        let path = Path::new(file_name);
+        let bytes = if path.metadata()?.len() > crate::run::MAX_OPEN_FILE_LEN {
+            debug!("opening {} with mmap", path.display());
             // SAFETY: unsafe used here for mmap
             let mmap = unsafe {
                 MmapOptions::new()
                     .populate()
                     .map(&File::open(path).await?)?
             };
-            bytes.extend_from_slice(&mmap[..]);
+            mmap.to_owned()
         } else {
-            bytes.extend_from_slice(&tokio::fs::read(path).await?);
-        }
-        // Decrypt result_bytes
-        let decrypted = match decrypt(&bytes, secret) {
-            Ok(dc) => dc,
-            Err(e) => {
-                bail!("failed to decrypt file: {}.", e)
-            }
+            debug!("opening {} with tokio", path.display());
+            tokio::fs::read(path).await?
         };
-        // Decompress decrypted bytes
-        let decompressed = crate::run::decompress(&decrypted).await?;
-        // Return downloaded & decrypted bytes
-        Ok(decompressed)
+        // Return downloaded chunk bytes
+        Ok(bytes)
     }
 
     async fn delete(&self, file_name: &str) -> Result<()> {
@@ -168,7 +146,7 @@ impl KipProvider for KipUsb {
                 continue;
             }
             // Is a file, create KipFile and pusht to vec
-            let entry_kf = KipFile::new(entry.path().canonicalize()?);
+            let entry_kf = KipFile::new(entry.path().canonicalize()?)?;
             kfs.push(entry_kf);
         }
         Ok(kfs)

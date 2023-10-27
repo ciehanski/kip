@@ -136,41 +136,65 @@ pub enum Subcommands {
 mod tests {
     use assert_cmd::Command;
 
-    #[ignore]
     #[test]
     fn test_cli_runs() {
-        let mut cmd = Command::cargo_bin("kip").unwrap();
-        cmd.assert().failure().code(2);
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME")).unwrap();
+        let assert = cmd.assert();
+        assert.failure().code(2);
     }
 
-    #[ignore]
     #[test]
     fn test_status() {
-        let mut cmd = Command::cargo_bin("kip").unwrap();
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME")).unwrap();
         let assert = cmd.arg("status").assert();
         assert.success();
     }
 
-    #[ignore]
     #[test]
     fn test_status_ls() {
-        let mut cmd = Command::cargo_bin("kip").unwrap();
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME")).unwrap();
         let assert = cmd.arg("ls").assert();
         assert.success();
     }
 
+    #[test]
+    fn test_cli_init() {
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME")).unwrap();
+        let assert = cmd
+            .timeout(std::time::Duration::from_secs(10))
+            .arg("init")
+            .arg("test_job")
+            .write_stdin("hunter2\n".as_bytes())
+            .assert();
+        assert.interrupted();
+    }
+
+    #[test]
+    fn test_add_failure() {
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME")).unwrap();
+        let assert = cmd.arg("add").arg("test_job").assert();
+        assert.failure().code(2);
+        let assert2 = cmd.arg("add").arg("test_job").arg("-f").assert();
+        assert2.failure().code(2);
+    }
+
     #[ignore]
     #[test]
-    fn test_add() {
-        let mut cmd = Command::cargo_bin("kip").unwrap();
-        let assert = cmd.arg("add").arg("test1").assert();
-        assert.failure().code(2);
+    fn test_add_success() {
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME")).unwrap();
+        let assert = cmd
+            .arg("add")
+            .arg("test_job")
+            .arg("-f")
+            .arg("test/random.txt")
+            .assert();
+        assert.success();
     }
 
     #[ignore]
     #[test]
     fn test_cli_daemon() {
-        let mut cmd = Command::cargo_bin("kip").unwrap();
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME")).unwrap();
         let assert = cmd.arg("daemon").assert();
         assert.success();
     }
