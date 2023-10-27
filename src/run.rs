@@ -472,16 +472,7 @@ impl Run {
                     KipProviders::S3(ref s3) => {
                         debug!("starting S3 upload");
                         match s3
-                            .upload(
-                                KipUploadOpts::new(
-                                    f.path.canonicalize()?,
-                                    job.id,
-                                    secret,
-                                    tx.clone(),
-                                ),
-                                &chunk,
-                                chunk_bytes,
-                            )
+                            .upload(KipUploadOpts::new(job.id, tx.clone()), &chunk, chunk_bytes)
                             .await
                         {
                             Ok((rp, bu)) => {
@@ -519,16 +510,7 @@ impl Run {
                     KipProviders::Usb(ref usb) => {
                         debug!("starting USB upload");
                         match usb
-                            .upload(
-                                KipUploadOpts::new(
-                                    f.path.canonicalize()?,
-                                    job.id,
-                                    secret,
-                                    tx.clone(),
-                                ),
-                                &chunk,
-                                chunk_bytes,
-                            )
+                            .upload(KipUploadOpts::new(job.id, tx.clone()), &chunk, chunk_bytes)
                             .await
                         {
                             Ok((rp, bu)) => {
@@ -566,16 +548,7 @@ impl Run {
                     KipProviders::Gdrive(ref gdrive) => {
                         debug!("starting Gdrive upload");
                         match gdrive
-                            .upload(
-                                KipUploadOpts::new(
-                                    f.path.canonicalize()?,
-                                    job.id,
-                                    secret,
-                                    tx.clone(),
-                                ),
-                                &chunk,
-                                chunk_bytes,
-                            )
+                            .upload(KipUploadOpts::new(job.id, tx.clone()), &chunk, chunk_bytes)
                             .await
                         {
                             Ok((rp, bu)) => {

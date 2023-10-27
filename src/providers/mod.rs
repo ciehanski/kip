@@ -15,7 +15,6 @@ use crate::run::KipUploadMsg;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
@@ -37,25 +36,13 @@ pub trait KipProvider {
 
 #[derive(Debug)]
 pub struct KipUploadOpts {
-    pub source_path: PathBuf,
     pub job_id: Uuid,
-    pub secret: String,
     pub msg_tx: UnboundedSender<KipUploadMsg>,
 }
 
 impl KipUploadOpts {
-    pub fn new<S: Into<String>>(
-        source_path: PathBuf,
-        job_id: Uuid,
-        secret: S,
-        msg_tx: UnboundedSender<KipUploadMsg>,
-    ) -> Self {
-        Self {
-            source_path,
-            job_id,
-            secret: secret.into(),
-            msg_tx,
-        }
+    pub fn new(job_id: Uuid, msg_tx: UnboundedSender<KipUploadMsg>) -> Self {
+        Self { job_id, msg_tx }
     }
 }
 

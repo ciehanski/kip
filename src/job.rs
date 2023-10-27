@@ -194,11 +194,11 @@ impl Job {
                     bail!("{e}.")
                 }
             };
+            // Reset provider env vars to nil
+            self.zeroize_provider_env_vars();
         } else {
             bail!("couldn't find run {run}.")
         }
-        // Reset provider env vars to nil
-        self.zeroize_provider_env_vars();
         // Success
         Ok(())
     }
@@ -210,23 +210,22 @@ impl Job {
         let fpath = Path::new(&f).canonicalize()?;
         self.set_provider_env_vars()?;
         for run in self.runs.iter() {
-            for chunk in run.1.files_changed.iter() {
-                if chunk.file.path == fpath {
-                    // TODO: change this chunk_path based on the
-                    // job's provider as the paths will differ
-                    let chunk_path = format!("{}/chunks/{}.chunk", self.id, chunk.file.hash);
-                    // Delete
-                    match &self.provider {
-                        KipProviders::S3(s3) => {
-                            s3.delete(&chunk_path).await?;
-                        }
-                        KipProviders::Usb(usb) => {
-                            usb.delete(&chunk_path).await?;
-                        }
-                        KipProviders::Gdrive(gdrive) => {
-                            gdrive.delete(&chunk_path).await?;
-                        }
-                    };
+            for kfc in run.1.files_changed.iter() {
+                if kfc.file.path == fpath {
+                    for chunk in kfc.chunks.iter() {
+                        // Delete
+                        match &self.provider {
+                            KipProviders::S3(s3) => {
+                                s3.delete(&chunk.remote_path).await?;
+                            }
+                            KipProviders::Usb(usb) => {
+                                usb.delete(&chunk.remote_path).await?;
+                            }
+                            KipProviders::Gdrive(gdrive) => {
+                                gdrive.delete(&chunk.remote_path).await?;
+                            }
+                        };
+                    }
                 }
             }
         }
