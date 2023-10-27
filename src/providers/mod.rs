@@ -20,14 +20,16 @@ use uuid::Uuid;
 
 #[async_trait]
 pub trait KipProvider {
+    type Uploader;
     type Item;
 
     async fn upload<'b>(
         &self,
+        client: Option<&Self::Uploader>,
         opts: KipUploadOpts,
         chunk: &FileChunk,
         chunk_bytes: &'b [u8],
-    ) -> Result<(String, usize)>;
+    ) -> Result<usize>;
     async fn download(&self, source: &str) -> Result<Vec<u8>>;
     async fn delete(&self, remote_path: &str) -> Result<()>;
     async fn contains(&self, job: Uuid, hash: &str) -> Result<bool>;

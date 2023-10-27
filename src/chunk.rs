@@ -3,12 +3,12 @@
 //
 
 use crate::job::KipFile;
+use anyhow::Result;
 use crypto_hash::{hex_digest, Algorithm};
+use fastcdc::v2020::AsyncStreamCDC;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-
-use anyhow::Result;
 use tokio_stream::StreamExt;
 
 // 1 MB is min chunk size
@@ -61,6 +61,12 @@ impl KipFileChunked {
     pub fn new<P: AsRef<Path>, S: Into<String>>(path: P, file_hash: S, len: usize) -> Self {
         Self {
             file: KipFile {
+                name: path
+                    .as_ref()
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string(),
                 path: path.as_ref().to_path_buf(),
                 hash: file_hash.into(),
                 len,
@@ -96,7 +102,7 @@ pub async fn chunk_file<P: AsRef<Path>>(
     bytes: &[u8],
 ) -> Result<(KipFileChunked, HashMap<FileChunk, &[u8]>)> {
     // Create a new chunker & stream over bytes
-    let mut chunker = fastcdc::v2020::AsyncStreamCDC::new(
+    let mut chunker = AsyncStreamCDC::new(
         bytes,
         MIN_SIZE.try_into()?,
         AVG_SIZE.try_into()?,
@@ -134,8 +140,8 @@ mod tests {
     use super::*;
     use std::fs::read;
 
-    #[test]
-    fn test_chunk_single_chunk_file() {
+    #[tokio::test]
+    async fn test_chunk_single_chunk_file() {
         let mut contents = vec![];
         if !cfg!(windows) {
             // Unix, Mac, Linux, etc
@@ -150,7 +156,13 @@ mod tests {
             let mut cr = content_result.unwrap();
             contents.append(&mut cr);
         }
-        let chunk_hmap_result = chunk_file(&Path::new(""), String::new(), &contents);
+        let chunk_hmap_result = chunk_file(
+            &Path::new("test/vandy.jpg"),
+            String::new(),
+            contents.len(),
+            &contents,
+        )
+        .await;
         assert!(chunk_hmap_result.is_ok());
         let (_, chunk_hmap) = chunk_hmap_result.unwrap();
         assert_eq!(chunk_hmap.len(), 1);
@@ -162,20 +174,27 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_chunk_multi_chunk_file() {
+    #[tokio::test]
+    async fn test_chunk_multi_chunk_file() {
         let content_result = read("test/kip");
         assert!(content_result.is_ok());
         let contents = content_result.unwrap();
-        let chunk_hmap_result = chunk_file(&Path::new(""), String::new(), &contents);
+        let chunk_hmap_result = chunk_file(
+            &Path::new("test/kip"),
+            String::new(),
+            contents.len(),
+            &contents,
+        )
+        .await;
         assert!(chunk_hmap_result.is_ok());
         let (_, chunk_hmap) = chunk_hmap_result.unwrap();
         assert!(chunk_hmap.len() > 1);
+        println!("{:?}", chunk_hmap);
         for (c, _) in chunk_hmap.iter() {
             if c.offset == 0 {
                 assert_eq!(
                     c.hash,
-                    "e2910717492356757f34a9b7ecd2ab8454dfba1805715328f2a20954100b823a".to_string()
+                    "86d20d2ebc85db4b54db98e8a9f415225d3b230ff7ee7e07fb8927e16818b6ab".to_string()
                 );
             } else if c.offset == 7159842 {
                 assert_eq!(

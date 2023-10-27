@@ -160,7 +160,7 @@ mod tests {
         job::Job,
         providers::{s3::KipS3, KipProviders},
     };
-    use aws_sdk_s3::Region;
+    use aws_sdk_s3::config::Region;
     use keyring::{
         mock::{self, MockCredential},
         set_default_credential_builder,

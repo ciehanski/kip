@@ -1,15 +1,15 @@
 //
 // Copyright (c) 2022 Ryan Ciehanski <ryan@ciehanski.com>
 //
-
 use super::KipUploadOpts;
 use crate::chunk::FileChunk;
 use crate::providers::KipProvider;
 use anyhow::{bail, Result};
 use async_trait::async_trait;
-use aws_sdk_s3::model::Object;
-use aws_sdk_s3::types::ByteStream;
-use aws_sdk_s3::{Client, Region};
+use aws_sdk_s3::config::Region;
+use aws_sdk_s3::primitives::ByteStream;
+use aws_sdk_s3::types::Object;
+use aws_sdk_s3::Client;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt;
@@ -37,35 +37,32 @@ impl KipS3 {
 
 #[async_trait]
 impl KipProvider for KipS3 {
+    type Uploader = Client;
     type Item = Object;
 
     async fn upload<'b>(
         &self,
+        client: Option<&Self::Uploader>,
         opts: KipUploadOpts,
         chunk: &FileChunk,
         chunk_bytes: &'b [u8],
-    ) -> Result<(String, usize)> {
-        // Create S3 client
-        let s3_conf = aws_config::from_env()
-            .region(Region::new(self.aws_region.clone()))
-            .credentials_cache(aws_credential_types::cache::CredentialsCache::lazy())
-            .load()
-            .await;
-        let s3_client = Client::new(&s3_conf);
-        // Get chunk_bytes len
-        let ce_bytes_len = chunk_bytes.len();
-        let remote_path = format!("{}/chunks/{}.chunk", opts.job_id, chunk.hash);
-        // Upload
-        s3_client
-            .put_object()
-            .bucket(self.aws_bucket.clone())
-            .key(remote_path.clone())
-            .content_length(ce_bytes_len.try_into()?)
-            .content_type("application/octet-stream")
-            .body(ByteStream::from(Bytes::copy_from_slice(chunk_bytes)))
-            .send()
-            .await?;
-        Ok((remote_path, ce_bytes_len))
+    ) -> Result<usize> {
+        if let Some(s3) = client {
+            // Get chunk_bytes len
+            let ce_bytes_len = chunk_bytes.len();
+            // Upload
+            s3.put_object()
+                .bucket(self.aws_bucket.clone())
+                .key(format!("{}/chunks/{}.chunk", opts.job_id, chunk.hash))
+                .content_length(ce_bytes_len.try_into()?)
+                .content_type("application/octet-stream")
+                .body(ByteStream::from(Bytes::copy_from_slice(chunk_bytes)))
+                .send()
+                .await?;
+            Ok(ce_bytes_len)
+        } else {
+            bail!("s3 client not provided")
+        }
     }
 
     async fn download(&self, file_name: &str) -> Result<Vec<u8>> {

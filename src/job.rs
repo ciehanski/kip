@@ -11,7 +11,7 @@ use chrono::prelude::*;
 use colored::*;
 use crypto_hash::{hex_digest, Algorithm};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::env;
 use std::fmt::{Debug, Display};
 use std::path::{Path, PathBuf};
@@ -29,7 +29,7 @@ pub struct Job {
     pub files_amt: u64,
     pub excluded_files: Vec<PathBuf>,
     pub excluded_file_types: Vec<String>,
-    pub runs: HashMap<usize, Run>,
+    pub runs: BTreeMap<usize, Run>,
     pub bytes_amt_provider: u64,
     pub first_run: DateTime<Utc>,
     pub last_run: DateTime<Utc>,
@@ -65,7 +65,7 @@ impl Job {
             files_amt: 0,
             excluded_files: Vec::new(),
             excluded_file_types: Vec::new(),
-            runs: HashMap::new(),
+            runs: BTreeMap::new(),
             bytes_amt_provider: 0,
             first_run: time_init,
             last_run: time_init,
@@ -210,7 +210,7 @@ impl Job {
         let fpath = Path::new(&f).canonicalize()?;
         self.set_provider_env_vars()?;
         for run in self.runs.iter() {
-            for kfc in run.1.files_changed.iter() {
+            for kfc in run.1.delta.iter() {
                 if kfc.file.path == fpath {
                     for chunk in kfc.chunks.iter() {
                         // Delete
@@ -262,12 +262,24 @@ impl Job {
     /// Read each file in the job and store their SHA256 hashes
     async fn get_file_hashes(&mut self, follow_links: bool) -> Result<()> {
         for kf in self.files.iter_mut() {
-            // File
+            // Set File Hash
             if kf.is_file()? {
                 let file = open_file(&kf.path, kf.len.try_into()?).await?;
-                kf.hash = hex_digest(Algorithm::SHA256, &file);
+                let hash = hex_digest(Algorithm::SHA256, &file);
+                kf.hash = hash.clone();
+
+                // TODO:
+                // Loop through all runs and set the file hashes
+                // of all files changed during the run
+                for (_, r) in self.runs.iter_mut() {
+                    for kfc in r.delta.iter_mut() {
+                        if kf.path == kfc.file.path && kfc.file.hash.is_empty() {
+                            kfc.file.hash = hash.clone();
+                        }
+                    }
+                }
             } else {
-                // Directory
+                // Set Directory Hash
                 let mut dir_hash_str = String::new();
                 for entry in WalkDir::new(&kf.path).follow_links(follow_links) {
                     let entry = entry?;
@@ -400,6 +412,7 @@ impl Display for KipStatus {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct KipFile {
+    pub name: String,
     pub path: PathBuf,
     pub hash: String,
     pub len: usize,
@@ -410,6 +423,12 @@ impl KipFile {
         // Get len at time of creation
         let len: usize = path.as_ref().metadata()?.len().try_into()?;
         Ok(KipFile {
+            name: path
+                .as_ref()
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string(),
             path: path.as_ref().to_path_buf(),
             hash: String::new(),
             len,
@@ -441,7 +460,7 @@ mod tests {
     use super::*;
     use crate::compress::{KipCompressAlg, KipCompressLevel, KipCompressOpts};
     use crate::providers::s3::KipS3;
-    use aws_sdk_s3::Region;
+    use aws_sdk_s3::config::Region;
 
     #[test]
     fn test_get_files_amt() {
@@ -531,7 +550,7 @@ mod tests {
         assert!(hash_result.is_ok());
         assert_eq!(
             j.files[0].hash,
-            "8767ed60eaadc8c8c3e946d5b699985401c83928a899b930240be368d0ffa87b"
+            "f1a1615ff5aa5d1df596bf3707ff176cfd8054a669932e7f07f3bfc79de6033a"
         )
     }
 }

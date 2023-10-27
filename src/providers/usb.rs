@@ -45,14 +45,16 @@ impl KipUsb {
 
 #[async_trait]
 impl KipProvider for KipUsb {
+    type Uploader = ();
     type Item = KipFile;
 
     async fn upload<'b>(
         &self,
+        _client: Option<&Self::Uploader>,
         opts: KipUploadOpts,
         chunk: &FileChunk,
         chunk_bytes: &'b [u8],
-    ) -> Result<(String, usize)> {
+    ) -> Result<usize> {
         // Create all parent dirs if missing
         create_dir_all(Path::new(&format!(
             "{}/{}/chunks/",
@@ -74,7 +76,7 @@ impl KipProvider for KipUsb {
         // Copy encrypted and compressed chunk bytes into newly created
         // chunk file
         cfile.write_all(chunk_bytes).await?;
-        Ok((usb_path, ce_bytes_len))
+        Ok(ce_bytes_len)
     }
 
     async fn download(&self, file_name: &str) -> Result<Vec<u8>> {

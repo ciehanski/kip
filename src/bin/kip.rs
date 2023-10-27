@@ -2,7 +2,7 @@
 // Copyright (c) 2022 Ryan Ciehanski <ryan@ciehanski.com>
 //
 
-use aws_sdk_s3::Region;
+use aws_sdk_s3::config::Region;
 use chrono::prelude::*;
 use clap::Parser;
 use colored::*;
@@ -18,6 +18,7 @@ use kip::job::{Job, KipFile, KipStatus};
 use kip::providers::{gdrive::KipGdrive, s3::KipS3, usb::KipUsb, KipProviders};
 use kip::smtp::{send_email, KipEmail};
 use kip::terminate;
+use notify_rust::{Hint, Notification};
 use pretty_bytes::converter::convert;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
@@ -110,8 +111,7 @@ fn main() {
             Subcommands::Init { job } => {
                 let _trace = span!(Level::DEBUG, "KIP_INIT").entered();
                 let mut md = md.write().await;
-                // Ensure that job does not already exist with
-                // the provided name.
+                // Ensure that job does not already exist
                 for (j, _) in md.jobs.iter() {
                     if j == &job {
                         terminate!(17, "{} job '{job}' already exists.", "[ERR]".red());
@@ -663,6 +663,14 @@ fn main() {
                                 }
                             }
                         }
+                        // Send success desktop notification
+                        Notification::new()
+                            .summary("Backup Success")
+                            .body(&format!("job '{job}' upload to '{}' completed.", j.provider_name()))
+                            .appname("kip")
+                            .hint(Hint::Category("transfer.complete".to_owned()))
+                            .timeout(10)
+                            .show().expect("Unable to send notification.");
                     }
                     Err(e) => {
                         // Send error email if setting enabled
@@ -686,6 +694,15 @@ fn main() {
                                 }
                             }
                         }
+                        // Send error desktop notification
+                        Notification::new()
+                            .summary("Backup Error")
+                            .body(&format!("job '{job}' upload to '{}' failed: {e}", j.provider_name()))
+                            .appname("kip")
+                            .hint(Hint::Category("transfer.error".to_owned()))
+                            .timeout(10)
+                            .show().expect("Unable to send notification.");
+                        // Terminate app
                         terminate!(
                             8,
                             "{} job '{job}' upload to '{}' failed: {e}",
@@ -740,8 +757,25 @@ fn main() {
                 }
                 // Run the restore
                 match j.start_restore(run, &secret, &output_folder).await {
-                    Ok(_) => {}
+                    Ok(_) => {
+                        // Send success desktop notification
+                        Notification::new()
+                            .summary("Restore Success")
+                            .body(&format!("job '{job}' restore from '{}' completed.", j.provider_name()))
+                            .appname("kip")
+                            .hint(Hint::Category("transfer.complete".to_owned()))
+                            .timeout(10)
+                            .show().expect("Unable to send notification.");
+                    }
                     Err(e) => {
+                        // Send error desktop notification
+                        Notification::new()
+                            .summary("Restore Error")
+                            .body(&format!("job '{job}' restore from '{}' failed: {e}", j.provider_name()))
+                            .appname("kip")
+                            .hint(Hint::Category("transfer.error".to_owned()))
+                            .timeout(10)
+                            .show().expect("Unable to send notification.");
                         terminate!(2, "{} {e}", "[ERR]".red());
                     }
                 };
@@ -1129,7 +1163,7 @@ fn main() {
                                     .fg(comfy_table::Color::Green),
                                 Cell::new(&s3.aws_bucket),
                                 Cell::new(&s3.aws_region),
-                                Cell::new(r.files_changed.len()),
+                                Cell::new(r.delta.len()),
                                 Cell::new(convert(r.bytes_uploaded as f64)),
                                 Cell::new(&r.time_elapsed),
                                 print_status(r.status),
@@ -1152,7 +1186,7 @@ fn main() {
                                     .fg(comfy_table::Color::Green),
                                 Cell::new(&usb.name),
                                 Cell::new(usb.root_path.display().to_string()),
-                                Cell::new(r.files_changed.len()),
+                                Cell::new(r.delta.len()),
                                 Cell::new(convert(r.bytes_uploaded as f64)),
                                 Cell::new(&r.time_elapsed),
                                 print_status(r.status),
@@ -1177,7 +1211,7 @@ fn main() {
                                 Cell::new(format!("{}-{}", j.name, r.id))
                                     .fg(comfy_table::Color::Green),
                                 Cell::new(parent_folder),
-                                Cell::new(r.files_changed.len()),
+                                Cell::new(r.delta.len()),
                                 Cell::new(convert(r.bytes_uploaded as f64)),
                                 Cell::new(&r.time_elapsed),
                                 print_status(r.status),

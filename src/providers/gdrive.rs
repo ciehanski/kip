@@ -53,26 +53,73 @@ impl KipGdrive {
 
 #[async_trait]
 impl KipProvider for KipGdrive {
+    type Uploader = DriveHub<HttpsConnector<HttpConnector>>;
     type Item = File;
 
     async fn upload<'b>(
         &self,
+        client: Option<&Self::Uploader>,
         opts: KipUploadOpts,
         chunk: &FileChunk,
         chunk_bytes: &'b [u8],
-    ) -> Result<(String, usize)> {
-        // Generate Google Drive Hub
-        let hub = generate_gdrive_hub().await?;
-        // Check if job's parent folder exists in gdrive
-        if self.parent_folder.is_none() {
-            // If the KipGdrive parent_folder is empty, create the folder
-            // in gdrive
+    ) -> Result<usize> {
+        if let Some(client) = client {
+            // Check if job's parent folder exists in gdrive
+            if self.parent_folder.is_none() {
+                // If the KipGdrive parent_folder is empty, create the folder
+                // in gdrive
+                let req = File {
+                    name: Some(format!("{}", opts.job_id)),
+                    mime_type: Some("application/vnd.google-apps.folder".to_string()),
+                    ..Default::default()
+                };
+                let (_, result) = client
+                    .files()
+                    .create(req)
+                    .add_scope(Scope::File)
+                    .use_content_as_indexable_text(false)
+                    .supports_all_drives(false)
+                    .keep_revision_forever(false)
+                    .ignore_default_visibility(true)
+                    .upload(
+                        Cursor::new(vec![]),
+                        "application/vnd.google-apps.folder".parse().unwrap(),
+                    )
+                    .await?;
+                // Set parent_folder to returned folder ID
+                let job_folder = result.id.unwrap();
+                let req = File {
+                    name: Some(String::from("chunks")),
+                    parents: Some(vec![job_folder]),
+                    mime_type: Some("application/vnd.google-apps.folder".to_string()),
+                    ..Default::default()
+                };
+                let (_, result) = client
+                    .files()
+                    .create(req)
+                    .add_scope(Scope::File)
+                    .use_content_as_indexable_text(false)
+                    .supports_all_drives(false)
+                    .keep_revision_forever(false)
+                    .ignore_default_visibility(true)
+                    .upload(
+                        Cursor::new(vec![]),
+                        "application/vnd.google-apps.folder".parse().unwrap(),
+                    )
+                    .await?;
+                opts.msg_tx
+                    .send(KipUploadMsg::GdriveParentFolder(result.id.unwrap()))?;
+            }
+            // Get amount of bytes uploaded in this chunk
+            // after compression and encryption
+            let ce_bytes_len = chunk_bytes.len();
+            // Upload
             let req = File {
-                name: Some(format!("{}", opts.job_id)),
-                mime_type: Some("application/vnd.google-apps.folder".to_string()),
+                name: Some(format!("{}.chunk", chunk.hash)),
+                parents: Some(vec![self.parent_folder.to_owned().unwrap()]),
                 ..Default::default()
             };
-            let (_, result) = hub
+            let (_, _result) = client
                 .files()
                 .create(req)
                 .add_scope(Scope::File)
@@ -81,57 +128,16 @@ impl KipProvider for KipGdrive {
                 .keep_revision_forever(false)
                 .ignore_default_visibility(true)
                 .upload(
-                    Cursor::new(vec![]),
-                    "application/vnd.google-apps.folder".parse().unwrap(),
+                    Cursor::new(chunk_bytes),
+                    "application/octet-stream".parse().unwrap(),
                 )
                 .await?;
-            // Set parent_folder to returned folder ID
-            let job_folder = result.id.unwrap();
-            let req = File {
-                name: Some(String::from("chunks")),
-                parents: Some(vec![job_folder]),
-                mime_type: Some("application/vnd.google-apps.folder".to_string()),
-                ..Default::default()
-            };
-            let (_, result) = hub
-                .files()
-                .create(req)
-                .add_scope(Scope::File)
-                .use_content_as_indexable_text(false)
-                .supports_all_drives(false)
-                .keep_revision_forever(false)
-                .ignore_default_visibility(true)
-                .upload(
-                    Cursor::new(vec![]),
-                    "application/vnd.google-apps.folder".parse().unwrap(),
-                )
-                .await?;
-            opts.msg_tx
-                .send(KipUploadMsg::GdriveParentFolder(result.id.unwrap()))?;
+            // TODO: rework
+            //chunk.set_remote_path(result.id.unwrap());
+            Ok(ce_bytes_len)
+        } else {
+            bail!("gdrive client not provided")
         }
-        // Get amount of bytes uploaded in this chunk
-        // after compression and encryption
-        let ce_bytes_len = chunk_bytes.len();
-        // Upload
-        let req = File {
-            name: Some(format!("{}.chunk", chunk.hash)),
-            parents: Some(vec![self.parent_folder.to_owned().unwrap_or_default()]),
-            ..Default::default()
-        };
-        let (_, result) = hub
-            .files()
-            .create(req)
-            .add_scope(Scope::File)
-            .use_content_as_indexable_text(false)
-            .supports_all_drives(false)
-            .keep_revision_forever(false)
-            .ignore_default_visibility(true)
-            .upload(
-                Cursor::new(chunk_bytes),
-                "application/octet-stream".parse().unwrap(),
-            )
-            .await?;
-        Ok((result.id.unwrap(), ce_bytes_len))
     }
 
     async fn download(&self, file_name: &str) -> Result<Vec<u8>> {
@@ -292,7 +298,7 @@ impl KipProvider for KipGdrive {
     }
 }
 
-async fn generate_gdrive_hub() -> Result<DriveHub<HttpsConnector<HttpConnector>>> {
+pub async fn generate_gdrive_hub() -> Result<DriveHub<HttpsConnector<HttpConnector>>> {
     // Get client ID and client secret from env
     let client_id = std::env::var("GOOGLE_DRIVE_CLIENT_ID")?;
     let client_secret = std::env::var("GOOGLE_DRIVE_CLIENT_SECRET")?;

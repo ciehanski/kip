@@ -33,7 +33,7 @@ use walkdir::WalkDir;
 
 // 50 MB
 pub const MAX_OPEN_FILE_LEN: u64 = 50 * 1024 * 1024;
-const CONCURRENT_UPLOADS: usize = 200;
+const CONCURRENT_FILE_UPLOADS: usize = 30;
 
 /// A "Run" is a backup job with all the metadata
 /// pertaining to the backed up files.
@@ -45,7 +45,7 @@ pub struct Run {
     pub time_elapsed: String,
     pub finished: DateTime<Utc>,
     pub bytes_uploaded: u64,
-    pub files_changed: Vec<KipFileChunked>,
+    pub delta: Vec<KipFileChunked>,
     pub status: KipStatus,
     pub logs: Vec<String>,
     pub retain_forever: bool,
@@ -82,7 +82,7 @@ impl Run {
             time_elapsed: String::from("0d 0h 0m 0s"),
             finished: time_init,
             bytes_uploaded: 0,
-            files_changed: Vec::new(),
+            delta: Vec::new(),
             status: KipStatus::NEVER_RUN,
             logs: Vec::<String>::new(),
             retain_forever: false,
@@ -118,7 +118,7 @@ impl Run {
         let upload_queue = FuturesUnordered::new();
 
         // Rate limiting amount of concurrent uploads
-        let semaphore = Arc::new(Semaphore::new(CONCURRENT_UPLOADS));
+        let semaphore = Arc::new(Semaphore::new(CONCURRENT_FILE_UPLOADS));
 
         // Check if file is excluded
         debug!("checking file exlusions");
@@ -206,6 +206,7 @@ impl Run {
                 let run = self.clone();
                 let upload_tx = upload_tx.clone();
 
+                // Semaphore rate limiting
                 let permit = semaphore.clone().acquire_owned().await?;
 
                 // Create the spawned future for this file
@@ -229,7 +230,6 @@ impl Run {
                                 });
                         }
                     };
-
                     // Drop semaphore permit
                     drop(permit);
                 });
@@ -262,6 +262,9 @@ impl Run {
                     let run = self.clone();
                     let upload_tx = upload_tx.clone();
 
+                    // Semaphore rate limiting
+                    let permit = semaphore.clone().acquire_owned().await?;
+
                     // Create the spawned future for this file
                     debug!("upload directory file future created");
                     let upload_dir_file_future = tokio::task::spawn(async move {
@@ -281,6 +284,8 @@ impl Run {
                                     });
                             }
                         };
+                        // Drop semaphore permit
+                        drop(permit);
                     });
 
                     // Add file upload future join handler to vec
@@ -305,8 +310,33 @@ impl Run {
                 KipUploadMsg::BytesUploaded(bu) => {
                     self.bytes_uploaded += bu;
                 }
-                KipUploadMsg::KipFileChunked(kfc) => {
-                    self.files_changed.push(kfc);
+                KipUploadMsg::KipFileChunked(mut kfc) => {
+                    match &job.provider {
+                        KipProviders::S3(_) => {
+                            for chunk in kfc.chunks.iter_mut() {
+                                if chunk.remote_path.is_empty() {
+                                    chunk.set_remote_path(&format!(
+                                        "{}/chunks/{}.chunk",
+                                        job.id, chunk.hash,
+                                    ));
+                                }
+                            }
+                        }
+                        KipProviders::Usb(_) => {
+                            for chunk in kfc.chunks.iter_mut() {
+                                if chunk.remote_path.is_empty() {
+                                    chunk.set_remote_path(&format!(
+                                        "{}/chunks/{}.chunk",
+                                        job.id, chunk.hash,
+                                    ));
+                                }
+                            }
+                        }
+                        KipProviders::Gdrive(_) => {
+                            todo!("a little more complicated")
+                        }
+                    }
+                    self.delta.push(kfc);
                 }
                 KipUploadMsg::Log(l) => {
                     self.logs.push(l);
@@ -467,41 +497,57 @@ impl Run {
 
             // Upload to the provider for this job
             // Either S3, Gdrive, or USB
-            for (mut chunk, chunk_bytes) in chunks {
+            for (chunk, chunk_bytes) in chunks {
                 match job.provider {
                     KipProviders::S3(ref s3) => {
+                        // Create S3 client
+                        let s3_conf =
+                            aws_config::from_env()
+                                .region(aws_sdk_s3::config::Region::new(s3.aws_region.clone()))
+                                .credentials_cache(
+                                    aws_credential_types::cache::CredentialsCache::lazy(),
+                                )
+                                .load()
+                                .await;
+                        let s3_client = aws_sdk_s3::Client::new(&s3_conf);
+
                         debug!("starting S3 upload");
                         match s3
-                            .upload(KipUploadOpts::new(job.id, tx.clone()), &chunk, chunk_bytes)
+                            .upload(
+                                Some(&s3_client),
+                                KipUploadOpts::new(job.id, tx.clone()),
+                                &chunk,
+                                chunk_bytes,
+                            )
                             .await
                         {
-                            Ok((rp, bu)) => {
+                            Ok(bu) => {
                                 // Increment progress bar by chunk bytes len
                                 progress.lock().await.inc_and_draw(&bar, bu);
                                 // Increment run's uploaded bytes
                                 tx.send(KipUploadMsg::BytesUploaded(bu.try_into()?))?;
                                 // Push logs
                                 tx.send(KipUploadMsg::Log(format!(
-                                    "[{}] {}-{} ⇉ '{}' uploaded successfully to '{}'.",
+                                    "[{}] {}-{} ⇉ '{}' ({}) uploaded successfully to '{}'.",
                                     Utc::now().format("%Y-%m-%d %H:%M:%S"),
                                     job.name,
                                     self.id,
-                                    f.path.display().to_string().green(),
+                                    f.name.green(),
+                                    chunk.hash,
                                     s3.aws_bucket,
                                 )))?;
-                                // Set chunk's remote path
-                                chunk.set_remote_path(rp);
                             }
                             Err(e) => {
                                 // Cancel progress bar
                                 progress_cancel.lock().await.cancel(bar);
                                 // Push logs
                                 tx.send(KipUploadMsg::Error(format!(
-                                    "[{}] {}-{} ⇉ '{}' upload failed: {e}.",
+                                    "[{}] {}-{} ⇉ '{}' ({}) upload failed: {e}.",
                                     Utc::now().format("%Y-%m-%d %H:%M:%S"),
                                     job.name,
                                     self.id,
-                                    f.path.display().to_string().red(),
+                                    f.name.green(),
+                                    chunk.hash,
                                 )))?;
                                 bail!(e);
                             }
@@ -510,73 +556,86 @@ impl Run {
                     KipProviders::Usb(ref usb) => {
                         debug!("starting USB upload");
                         match usb
-                            .upload(KipUploadOpts::new(job.id, tx.clone()), &chunk, chunk_bytes)
+                            .upload(
+                                None,
+                                KipUploadOpts::new(job.id, tx.clone()),
+                                &chunk,
+                                chunk_bytes,
+                            )
                             .await
                         {
-                            Ok((rp, bu)) => {
+                            Ok(bu) => {
                                 // Increment progress bar by chunk bytes len
                                 progress.lock().await.inc_and_draw(&bar, bu);
                                 // Increment run's uploaded bytes
                                 tx.send(KipUploadMsg::BytesUploaded(bu.try_into()?))?;
                                 // Push logs
                                 tx.send(KipUploadMsg::Log(format!(
-                                    "[{}] {}-{} ⇉ '{}' uploaded successfully to '{}'.",
+                                    "[{}] {}-{} ⇉ '{}' ({}) uploaded successfully to '{}'.",
                                     Utc::now().format("%Y-%m-%d %H:%M:%S"),
                                     job.name,
                                     self.id,
-                                    f.path.display().to_string().green(),
+                                    f.name.green(),
+                                    chunk.hash,
                                     usb.name,
                                 )))?;
-                                // Set chunk's remote path
-                                chunk.set_remote_path(rp);
                             }
                             Err(e) => {
                                 // Cancel progress bar
                                 progress_cancel.lock().await.cancel(bar);
                                 // Push logs
                                 tx.send(KipUploadMsg::Error(format!(
-                                    "[{}] {}-{} ⇉ '{}' upload failed: {e}.",
+                                    "[{}] {}-{} ⇉ '{}' ({}) upload failed: {e}.",
                                     Utc::now().format("%Y-%m-%d %H:%M:%S"),
                                     job.name,
                                     self.id,
-                                    f.path.display().to_string().red(),
+                                    f.name.green(),
+                                    chunk.hash,
                                 )))?;
                                 bail!(e);
                             }
                         };
                     }
                     KipProviders::Gdrive(ref gdrive) => {
+                        // Generate Google Drive Hub
+                        let hub = crate::providers::gdrive::generate_gdrive_hub().await?;
+
                         debug!("starting Gdrive upload");
                         match gdrive
-                            .upload(KipUploadOpts::new(job.id, tx.clone()), &chunk, chunk_bytes)
+                            .upload(
+                                Some(&hub),
+                                KipUploadOpts::new(job.id, tx.clone()),
+                                &chunk,
+                                chunk_bytes,
+                            )
                             .await
                         {
-                            Ok((rp, bu)) => {
+                            Ok(bu) => {
                                 // Increment progress bar by chunk bytes len
                                 progress.lock().await.inc_and_draw(&bar, bu);
                                 // Increment run's uploaded bytes
                                 tx.send(KipUploadMsg::BytesUploaded(bu.try_into()?))?;
                                 // Push logs
                                 tx.send(KipUploadMsg::Log(format!(
-                                    "[{}] {}-{} ⇉ '{}' uploaded successfully to Google Drive.",
+                                    "[{}] {}-{} ⇉ '{}' ({}) uploaded successfully to Google Drive.",
                                     Utc::now().format("%Y-%m-%d %H:%M:%S"),
                                     job.name,
                                     self.id,
-                                    f.path.display().to_string().green(),
+                                    f.name.green(),
+                                    chunk.hash,
                                 )))?;
-                                // Set chunk's remote path
-                                chunk.set_remote_path(rp);
                             }
                             Err(e) => {
                                 // Cancel progress bar
                                 progress_cancel.lock().await.cancel(bar);
                                 // Push logs
                                 tx.send(KipUploadMsg::Error(format!(
-                                    "[{}] {}-{} ⇉ '{}' upload failed: {e}.",
+                                    "[{}] {}-{} ⇉ '{}' ({}) upload failed: {e}.",
                                     Utc::now().format("%Y-%m-%d %H:%M:%S"),
                                     job.name,
                                     self.id,
-                                    f.path.display().to_string().red(),
+                                    f.name.green(),
+                                    chunk.hash,
                                 )))?;
                                 bail!(e);
                             }
@@ -608,14 +667,14 @@ impl Run {
             self.id,
         );
 
-        // Confirm files_changed is not nil
-        if self.files_changed.is_empty() {
+        // Confirm delta is not nil
+        if self.delta.is_empty() {
             bail!("nothing to restore, no files were changed on this run.")
         }
 
         // For each object in the bucket, download it
         let mut counter: u64 = 0;
-        for kfc in self.files_changed.iter() {
+        for kfc in self.delta.iter() {
             let local_path = kfc.file.path.display().to_string();
 
             if kfc.is_single_chunk() {
@@ -630,7 +689,7 @@ impl Run {
                                 job.name,
                                 self.id,
                                 local_path.red(),
-                                self.files_changed.len(),
+                                self.delta.len(),
                             );
                             error!("{log}: {e}");
                             eprintln!("{log}");
@@ -648,7 +707,7 @@ impl Run {
                                     job.name,
                                     self.id,
                                     local_path.red(),
-                                    self.files_changed.len(),
+                                    self.delta.len(),
                                 );
                                 error!("{log}: {e}");
                                 eprintln!("{log}");
@@ -666,7 +725,7 @@ impl Run {
                                     job.name,
                                     self.id,
                                     local_path.red(),
-                                    self.files_changed.len(),
+                                    self.delta.len(),
                                 );
                                 error!("{log}: {e}");
                                 eprintln!("{log}");
@@ -713,20 +772,20 @@ impl Run {
                             }
                         },
                     };
-                    // Ruh-roh, chunk bytes shouldn't be empty
+                    // Ruh-roh, chunk bytes shouldn't be empty,
+                    // download failed
                     if chunk_bytes.is_empty() {
-                        // Error downloading chunk bytes, vec is empty
                         let log = format!(
                             "[{}] {}-{} ⇉ '{}' chunk download failed. ({counter}/{})",
                             Utc::now().format("%y-%m-%d %h:%m:%s"),
                             job.name,
                             self.id,
-                            local_path.red(),
-                            self.files_changed.len(),
+                            chunk.hash.red(),
+                            self.delta.len(),
                         );
                         error!("{log}");
                         eprintln!("{log}");
-                        continue;
+                        break;
                     }
                     // Seeks to the offset where this chunked data
                     // segment begins and write it to completion
@@ -734,6 +793,23 @@ impl Run {
                     multi_chunks.insert(chunk.clone(), chunk_bytes);
                     debug!("chunk written to offset {}", chunk.offset);
                 }
+
+                // Error downloading or assembling chunk bytes,
+                // vec is empty
+                if multi_chunks.is_empty() {
+                    let log = format!(
+                        "[{}] {}-{} ⇉ '{}' file assembly failed. ({counter}/{})",
+                        Utc::now().format("%y-%m-%d %h:%m:%s"),
+                        job.name,
+                        self.id,
+                        kfc.file.path.display().to_string().red(),
+                        self.delta.len(),
+                    );
+                    error!("{log}");
+                    eprintln!("{log}");
+                    continue;
+                }
+
                 // Decrypt before decompression (if enabled)
                 debug!("decrypting and decompressing restored file");
                 let mut tvec = Vec::with_capacity(chunks_len);
@@ -746,19 +822,19 @@ impl Run {
                 // Hash the restored file and compare it to
                 // the original KipFile hash
                 debug!("comparing hash with the original file's hash");
-                //if hex_digest(Algorithm::SHA256, &decrypted) != kfc.file.hash {
-                //    let log = format!(
-                //        "[{}] {}-{} ⇉ '{}' restore failed. ({counter}/{})",
-                //        Utc::now().format("%Y-%m-%d %H:%M:%S"),
-                //        job.name,
-                //        self.id,
-                //        local_path.red(),
-                //        self.files_changed.len(),
-                //    );
-                //    error!("{log}: restored hash did not match original file hash");
-                //    eprintln!("{log}");
-                //    continue;
-                //}
+                if hex_digest(Algorithm::SHA256, &decrypted) != kfc.file.hash {
+                    let log = format!(
+                        "[{}] {}-{} ⇉ '{}' restore failed. ({counter}/{})",
+                        Utc::now().format("%Y-%m-%d %H:%M:%S"),
+                        job.name,
+                        self.id,
+                        local_path.red(),
+                        self.delta.len(),
+                    );
+                    error!("{log}: restored hash did not match original file hash");
+                    eprintln!("{log}");
+                    continue;
+                }
                 // Creates or opens restored file
                 debug!("creating or opening file");
                 let mut cfile = create_file(&kfc.file.path, output_folder)?;
@@ -775,7 +851,7 @@ impl Run {
                 job.name,
                 self.id,
                 local_path.green(),
-                self.files_changed.len(),
+                self.delta.len(),
             );
         }
         Ok(())
@@ -931,7 +1007,7 @@ mod tests {
     //         fc = c.0;
     //     }
     //     for cc in t {
-    //         r.files_changed.push(cc);
+    //         r.delta.push(cc);
     //     }
     //     assert!(r.is_single_chunk(&fc))
     // }
@@ -955,7 +1031,7 @@ mod tests {
     //         fc = c.0;
     //     }
     //     for cc in t {
-    //         r.files_changed.push(cc);
+    //         r.delta.push(cc);
     //     }
     //     assert!(!r.is_single_chunk(&fc))
     // }
