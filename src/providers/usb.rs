@@ -6,19 +6,14 @@ use super::KipUploadOpts;
 use crate::chunk::FileChunk;
 use crate::job::KipFile;
 use crate::providers::KipProvider;
-use crate::run::KipUploadMsg;
 use anyhow::Result;
 use async_trait::async_trait;
-use linya::{Bar, Progress};
 use memmap2::MmapOptions;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fs::create_dir_all;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
-use tokio::sync::Mutex;
 use tracing::debug;
 use uuid::Uuid;
 use walkdir::WalkDir;
@@ -53,41 +48,33 @@ impl KipProvider for KipUsb {
     type Item = KipFile;
 
     async fn upload<'b>(
-        &mut self,
+        &self,
         opts: KipUploadOpts,
-        chunks_map: HashMap<FileChunk, &'b [u8]>,
-        progress: Arc<Mutex<Progress>>,
-        bar: &Bar,
-    ) -> Result<()> {
+        chunk: &FileChunk,
+        chunk_bytes: &'b [u8],
+    ) -> Result<(String, usize)> {
         // Create all parent dirs if missing
         create_dir_all(Path::new(&format!(
             "{}/{}/chunks/",
             self.root_path.display(),
             opts.job_id
         )))?;
-        // Upload each chunk
-        for (chunk, chunk_bytes) in chunks_map {
-            // Get amount of bytes uploaded in this chunk
-            // after compression and encryption
-            let ce_bytes_len = chunk_bytes.len();
-            // Set chunk's remote path
-            let usb_path = format!(
-                "{}/{}/chunks/{}.chunk",
-                self.root_path.display(),
-                opts.job_id,
-                chunk.hash
-            );
-            // Create new file in the USB drive
-            let mut cfile = File::create(usb_path).await?;
-            // Copy encrypted and compressed chunk bytes into newly created
-            // chunk file
-            cfile.write_all(chunk_bytes).await?;
-            // Increment progress bar by chunk bytes len
-            progress.lock().await.inc_and_draw(bar, ce_bytes_len);
-            opts.msg_tx
-                .send(KipUploadMsg::BytesUploaded(ce_bytes_len.try_into()?))?;
-        }
-        Ok(())
+        // Get amount of bytes uploaded in this chunk
+        // after compression and encryption
+        let ce_bytes_len = chunk_bytes.len();
+        // Set chunk's remote path
+        let usb_path = format!(
+            "{}/{}/chunks/{}.chunk",
+            self.root_path.display(),
+            opts.job_id,
+            chunk.hash
+        );
+        // Create new file in the USB drive
+        let mut cfile = File::create(usb_path.clone()).await?;
+        // Copy encrypted and compressed chunk bytes into newly created
+        // chunk file
+        cfile.write_all(chunk_bytes).await?;
+        Ok((usb_path, ce_bytes_len))
     }
 
     async fn download(&self, file_name: &str) -> Result<Vec<u8>> {

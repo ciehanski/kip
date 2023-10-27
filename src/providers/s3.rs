@@ -5,19 +5,14 @@
 use super::KipUploadOpts;
 use crate::chunk::FileChunk;
 use crate::providers::KipProvider;
-use crate::run::KipUploadMsg;
 use anyhow::{bail, Result};
 use async_trait::async_trait;
 use aws_sdk_s3::model::Object;
 use aws_sdk_s3::types::ByteStream;
 use aws_sdk_s3::{Client, Region};
 use bytes::Bytes;
-use linya::{Bar, Progress};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::sync::Arc;
 use tokio::io::AsyncReadExt;
-use tokio::sync::Mutex;
 use tracing::debug;
 use uuid::Uuid;
 
@@ -45,12 +40,11 @@ impl KipProvider for KipS3 {
     type Item = Object;
 
     async fn upload<'b>(
-        &mut self,
+        &self,
         opts: KipUploadOpts,
-        chunks_map: HashMap<FileChunk, &'b [u8]>,
-        progress: Arc<Mutex<Progress>>,
-        bar: &Bar,
-    ) -> Result<()> {
+        chunk: &FileChunk,
+        chunk_bytes: &'b [u8],
+    ) -> Result<(String, usize)> {
         // Create S3 client
         let s3_conf = aws_config::from_env()
             .region(Region::new(self.aws_region.clone()))
@@ -58,27 +52,20 @@ impl KipProvider for KipS3 {
             .load()
             .await;
         let s3_client = Client::new(&s3_conf);
-        // Upload each chunk
-        for (chunk, chunk_bytes) in chunks_map {
-            // Get chunk_bytes len
-            let ce_bytes_len = chunk_bytes.len();
-            // Upload
-            s3_client
-                .put_object()
-                .bucket(self.aws_bucket.clone())
-                .key(format!("{}/chunks/{}.chunk", opts.job_id, chunk.hash))
-                .content_length(ce_bytes_len.try_into()?)
-                .content_type("application/octet-stream")
-                .body(ByteStream::from(Bytes::copy_from_slice(chunk_bytes)))
-                .send()
-                .await?;
-            // Increment progress bar by chunk bytes len
-            progress.lock().await.inc_and_draw(bar, ce_bytes_len);
-            // Increment run's uploaded bytes
-            opts.msg_tx
-                .send(KipUploadMsg::BytesUploaded(ce_bytes_len.try_into()?))?;
-        }
-        Ok(())
+        // Get chunk_bytes len
+        let ce_bytes_len = chunk_bytes.len();
+        let remote_path = format!("{}/chunks/{}.chunk", opts.job_id, chunk.hash);
+        // Upload
+        s3_client
+            .put_object()
+            .bucket(self.aws_bucket.clone())
+            .key(remote_path.clone())
+            .content_length(ce_bytes_len.try_into()?)
+            .content_type("application/octet-stream")
+            .body(ByteStream::from(Bytes::copy_from_slice(chunk_bytes)))
+            .send()
+            .await?;
+        Ok((remote_path, ce_bytes_len))
     }
 
     async fn download(&self, file_name: &str) -> Result<Vec<u8>> {

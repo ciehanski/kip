@@ -14,13 +14,9 @@ use drive3::hyper::client::HttpConnector;
 use drive3::hyper_rustls::HttpsConnector;
 use drive3::{hyper, hyper_rustls, oauth2, DriveHub, Error};
 use google_drive3 as drive3;
-use linya::{Bar, Progress};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::default::Default;
 use std::io::Cursor;
-use std::sync::Arc;
-use tokio::sync::Mutex;
 use tracing::debug;
 use uuid::Uuid;
 
@@ -60,12 +56,11 @@ impl KipProvider for KipGdrive {
     type Item = File;
 
     async fn upload<'b>(
-        &mut self,
+        &self,
         opts: KipUploadOpts,
-        chunks_map: HashMap<FileChunk, &'b [u8]>,
-        progress: Arc<Mutex<Progress>>,
-        bar: &Bar,
-    ) -> Result<()> {
+        chunk: &FileChunk,
+        chunk_bytes: &'b [u8],
+    ) -> Result<(String, usize)> {
         // Generate Google Drive Hub
         let hub = generate_gdrive_hub().await?;
         // Check if job's parent folder exists in gdrive
@@ -111,41 +106,32 @@ impl KipProvider for KipGdrive {
                     "application/vnd.google-apps.folder".parse().unwrap(),
                 )
                 .await?;
-            self.parent_folder = Some(result.id.unwrap());
-        }
-        // Upload each chunk
-        for (mut chunk, chunk_bytes) in chunks_map {
-            // Get amount of bytes uploaded in this chunk
-            // after compression and encryption
-            let ce_bytes_len = chunk_bytes.len();
-            // Upload
-            let req = File {
-                name: Some(format!("{}.chunk", chunk.hash)),
-                parents: Some(vec![self.parent_folder.to_owned().unwrap_or_default()]),
-                ..Default::default()
-            };
-            let (_, result) = hub
-                .files()
-                .create(req)
-                .add_scope(Scope::File)
-                .use_content_as_indexable_text(false)
-                .supports_all_drives(false)
-                .keep_revision_forever(false)
-                .ignore_default_visibility(true)
-                .upload(
-                    Cursor::new(chunk_bytes),
-                    "application/octet-stream".parse().unwrap(),
-                )
-                .await?;
-            // Set chunk's remote path
-            chunk.set_remote_path(result.id.unwrap());
-            // Increment progress bar by chunk bytes len
-            progress.lock().await.inc_and_draw(bar, ce_bytes_len);
-            // Increment run's uploaded bytes
             opts.msg_tx
-                .send(KipUploadMsg::BytesUploaded(ce_bytes_len.try_into()?))?;
+                .send(KipUploadMsg::GdriveParentFolder(result.id.unwrap()))?;
         }
-        Ok(())
+        // Get amount of bytes uploaded in this chunk
+        // after compression and encryption
+        let ce_bytes_len = chunk_bytes.len();
+        // Upload
+        let req = File {
+            name: Some(format!("{}.chunk", chunk.hash)),
+            parents: Some(vec![self.parent_folder.to_owned().unwrap_or_default()]),
+            ..Default::default()
+        };
+        let (_, result) = hub
+            .files()
+            .create(req)
+            .add_scope(Scope::File)
+            .use_content_as_indexable_text(false)
+            .supports_all_drives(false)
+            .keep_revision_forever(false)
+            .ignore_default_visibility(true)
+            .upload(
+                Cursor::new(chunk_bytes),
+                "application/octet-stream".parse().unwrap(),
+            )
+            .await?;
+        Ok((result.id.unwrap(), ce_bytes_len))
     }
 
     async fn download(&self, file_name: &str) -> Result<Vec<u8>> {

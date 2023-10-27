@@ -14,12 +14,9 @@ use crate::chunk::FileChunk;
 use crate::run::KipUploadMsg;
 use anyhow::Result;
 use async_trait::async_trait;
-use linya::{Bar, Progress};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
-use tokio::sync::{mpsc::UnboundedSender, Mutex};
+use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
 #[async_trait]
@@ -27,12 +24,11 @@ pub trait KipProvider {
     type Item;
 
     async fn upload<'b>(
-        &mut self,
+        &self,
         opts: KipUploadOpts,
-        chunks: HashMap<FileChunk, &'b [u8]>,
-        progress: Arc<Mutex<Progress>>,
-        bar: &Bar,
-    ) -> Result<()>;
+        chunk: &FileChunk,
+        chunk_bytes: &'b [u8],
+    ) -> Result<(String, usize)>;
     async fn download(&self, source: &str) -> Result<Vec<u8>>;
     async fn delete(&self, remote_path: &str) -> Result<()>;
     async fn contains(&self, job: Uuid, hash: &str) -> Result<bool>;

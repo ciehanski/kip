@@ -57,6 +57,7 @@ pub enum KipUploadMsg {
     KipFileChunked(KipFileChunked),
     Log(String),
     Error(String),
+    GdriveParentFolder(String),
     Skipped,
     Done,
 }
@@ -304,35 +305,8 @@ impl Run {
                 KipUploadMsg::BytesUploaded(bu) => {
                     self.bytes_uploaded += bu;
                 }
-                KipUploadMsg::KipFileChunked(mut kcf) => {
-                    // Loop through each chunk and update the remote_path
-                    // Will differ per provider
-                    match &job.provider {
-                        KipProviders::S3(_) => {
-                            for chunk in kcf.chunks.iter_mut() {
-                                if chunk.remote_path.is_empty() {
-                                    chunk.set_remote_path(format!(
-                                        "{}/chunks/{}.chunk",
-                                        job.id, &chunk.hash
-                                    ));
-                                }
-                            }
-                        }
-                        KipProviders::Usb(_) => {
-                            for chunk in kcf.chunks.iter_mut() {
-                                if chunk.remote_path.is_empty() {
-                                    chunk.set_remote_path(format!(
-                                        "{}/chunks/{}.chunk",
-                                        job.id, &chunk.hash
-                                    ));
-                                }
-                            }
-                        }
-                        KipProviders::Gdrive(_) => {
-                            todo!("a little more complicated");
-                        }
-                    }
-                    self.files_changed.push(kcf);
+                KipUploadMsg::KipFileChunked(kfc) => {
+                    self.files_changed.push(kfc);
                 }
                 KipUploadMsg::Log(l) => {
                     self.logs.push(l);
@@ -342,6 +316,11 @@ impl Run {
                     eprintln!("{e}");
                     error!(err, "{e}");
                     self.logs.push(e);
+                }
+                KipUploadMsg::GdriveParentFolder(_gpf) => {
+                    if let KipProviders::Gdrive(ref _gd) = job.provider {
+                        //gd.parent_folder = Some(gpf);
+                    }
                 }
                 KipUploadMsg::Skipped => {
                     skipped += 1;
@@ -488,116 +467,150 @@ impl Run {
 
             // Upload to the provider for this job
             // Either S3, Gdrive, or USB
-            match job.provider {
-                KipProviders::S3(mut s3) => {
-                    debug!("starting S3 upload");
-                    match s3
-                        .upload(
-                            KipUploadOpts::new(f.path.canonicalize()?, job.id, secret, tx.clone()),
-                            chunks,
-                            progress,
-                            &bar,
-                        )
-                        .await
-                    {
-                        Ok(_) => {
-                            // Push logs
-                            tx.send(KipUploadMsg::Log(format!(
-                                "[{}] {}-{} ⇉ '{}' uploaded successfully to '{}'.",
-                                Utc::now().format("%Y-%m-%d %H:%M:%S"),
-                                job.name,
-                                self.id,
-                                f.path.display().to_string().green(),
-                                s3.aws_bucket,
-                            )))?;
-                        }
-                        Err(e) => {
-                            // Cancel progress bar
-                            progress_cancel.lock().await.cancel(bar);
-                            // Push logs
-                            tx.send(KipUploadMsg::Error(format!(
-                                "[{}] {}-{} ⇉ '{}' upload failed: {e}.",
-                                Utc::now().format("%Y-%m-%d %H:%M:%S"),
-                                job.name,
-                                self.id,
-                                f.path.display().to_string().red(),
-                            )))?;
-                        }
-                    };
-                }
-                KipProviders::Usb(mut usb) => {
-                    debug!("starting USB upload");
-                    match usb
-                        .upload(
-                            KipUploadOpts::new(f.path.canonicalize()?, job.id, secret, tx.clone()),
-                            chunks,
-                            progress,
-                            &bar,
-                        )
-                        .await
-                    {
-                        Ok(_) => {
-                            // Push logs
-                            tx.send(KipUploadMsg::Log(format!(
-                                "[{}] {}-{} ⇉ '{}' uploaded successfully to '{}'.",
-                                Utc::now().format("%Y-%m-%d %H:%M:%S"),
-                                job.name,
-                                self.id,
-                                f.path.display().to_string().green(),
-                                usb.name,
-                            )))?;
-                        }
-                        Err(e) => {
-                            // Cancel progress bar
-                            progress_cancel.lock().await.cancel(bar);
-                            // Push logs
-                            tx.send(KipUploadMsg::Error(format!(
-                                "[{}] {}-{} ⇉ '{}' upload failed: {e}.",
-                                Utc::now().format("%Y-%m-%d %H:%M:%S"),
-                                job.name,
-                                self.id,
-                                f.path.display().to_string().red(),
-                            )))?;
-                        }
-                    };
-                }
-                KipProviders::Gdrive(mut gdrive) => {
-                    debug!("starting Gdrive upload");
-                    match gdrive
-                        .upload(
-                            KipUploadOpts::new(f.path.canonicalize()?, job.id, secret, tx.clone()),
-                            chunks,
-                            progress,
-                            &bar,
-                        )
-                        .await
-                    {
-                        Ok(_) => {
-                            // Push logs
-                            tx.send(KipUploadMsg::Log(format!(
-                                "[{}] {}-{} ⇉ '{}' uploaded successfully to Google Drive.",
-                                Utc::now().format("%Y-%m-%d %H:%M:%S"),
-                                job.name,
-                                self.id,
-                                f.path.display().to_string().green(),
-                            )))?;
-                        }
-                        Err(e) => {
-                            // Cancel progress bar
-                            progress_cancel.lock().await.cancel(bar);
-                            // Push logs
-                            tx.send(KipUploadMsg::Error(format!(
-                                "[{}] {}-{} ⇉ '{}' upload failed: {e}.",
-                                Utc::now().format("%Y-%m-%d %H:%M:%S"),
-                                job.name,
-                                self.id,
-                                f.path.display().to_string().red(),
-                            )))?;
-                        }
-                    };
+            for (mut chunk, chunk_bytes) in chunks {
+                match job.provider {
+                    KipProviders::S3(ref s3) => {
+                        debug!("starting S3 upload");
+                        match s3
+                            .upload(
+                                KipUploadOpts::new(
+                                    f.path.canonicalize()?,
+                                    job.id,
+                                    secret,
+                                    tx.clone(),
+                                ),
+                                &chunk,
+                                chunk_bytes,
+                            )
+                            .await
+                        {
+                            Ok((rp, bu)) => {
+                                // Increment progress bar by chunk bytes len
+                                progress.lock().await.inc_and_draw(&bar, bu);
+                                // Increment run's uploaded bytes
+                                tx.send(KipUploadMsg::BytesUploaded(bu.try_into()?))?;
+                                // Push logs
+                                tx.send(KipUploadMsg::Log(format!(
+                                    "[{}] {}-{} ⇉ '{}' uploaded successfully to '{}'.",
+                                    Utc::now().format("%Y-%m-%d %H:%M:%S"),
+                                    job.name,
+                                    self.id,
+                                    f.path.display().to_string().green(),
+                                    s3.aws_bucket,
+                                )))?;
+                                // Set chunk's remote path
+                                chunk.set_remote_path(rp);
+                            }
+                            Err(e) => {
+                                // Cancel progress bar
+                                progress_cancel.lock().await.cancel(bar);
+                                // Push logs
+                                tx.send(KipUploadMsg::Error(format!(
+                                    "[{}] {}-{} ⇉ '{}' upload failed: {e}.",
+                                    Utc::now().format("%Y-%m-%d %H:%M:%S"),
+                                    job.name,
+                                    self.id,
+                                    f.path.display().to_string().red(),
+                                )))?;
+                                bail!(e);
+                            }
+                        };
+                    }
+                    KipProviders::Usb(ref usb) => {
+                        debug!("starting USB upload");
+                        match usb
+                            .upload(
+                                KipUploadOpts::new(
+                                    f.path.canonicalize()?,
+                                    job.id,
+                                    secret,
+                                    tx.clone(),
+                                ),
+                                &chunk,
+                                chunk_bytes,
+                            )
+                            .await
+                        {
+                            Ok((rp, bu)) => {
+                                // Increment progress bar by chunk bytes len
+                                progress.lock().await.inc_and_draw(&bar, bu);
+                                // Increment run's uploaded bytes
+                                tx.send(KipUploadMsg::BytesUploaded(bu.try_into()?))?;
+                                // Push logs
+                                tx.send(KipUploadMsg::Log(format!(
+                                    "[{}] {}-{} ⇉ '{}' uploaded successfully to '{}'.",
+                                    Utc::now().format("%Y-%m-%d %H:%M:%S"),
+                                    job.name,
+                                    self.id,
+                                    f.path.display().to_string().green(),
+                                    usb.name,
+                                )))?;
+                                // Set chunk's remote path
+                                chunk.set_remote_path(rp);
+                            }
+                            Err(e) => {
+                                // Cancel progress bar
+                                progress_cancel.lock().await.cancel(bar);
+                                // Push logs
+                                tx.send(KipUploadMsg::Error(format!(
+                                    "[{}] {}-{} ⇉ '{}' upload failed: {e}.",
+                                    Utc::now().format("%Y-%m-%d %H:%M:%S"),
+                                    job.name,
+                                    self.id,
+                                    f.path.display().to_string().red(),
+                                )))?;
+                                bail!(e);
+                            }
+                        };
+                    }
+                    KipProviders::Gdrive(ref gdrive) => {
+                        debug!("starting Gdrive upload");
+                        match gdrive
+                            .upload(
+                                KipUploadOpts::new(
+                                    f.path.canonicalize()?,
+                                    job.id,
+                                    secret,
+                                    tx.clone(),
+                                ),
+                                &chunk,
+                                chunk_bytes,
+                            )
+                            .await
+                        {
+                            Ok((rp, bu)) => {
+                                // Increment progress bar by chunk bytes len
+                                progress.lock().await.inc_and_draw(&bar, bu);
+                                // Increment run's uploaded bytes
+                                tx.send(KipUploadMsg::BytesUploaded(bu.try_into()?))?;
+                                // Push logs
+                                tx.send(KipUploadMsg::Log(format!(
+                                    "[{}] {}-{} ⇉ '{}' uploaded successfully to Google Drive.",
+                                    Utc::now().format("%Y-%m-%d %H:%M:%S"),
+                                    job.name,
+                                    self.id,
+                                    f.path.display().to_string().green(),
+                                )))?;
+                                // Set chunk's remote path
+                                chunk.set_remote_path(rp);
+                            }
+                            Err(e) => {
+                                // Cancel progress bar
+                                progress_cancel.lock().await.cancel(bar);
+                                // Push logs
+                                tx.send(KipUploadMsg::Error(format!(
+                                    "[{}] {}-{} ⇉ '{}' upload failed: {e}.",
+                                    Utc::now().format("%Y-%m-%d %H:%M:%S"),
+                                    job.name,
+                                    self.id,
+                                    f.path.display().to_string().red(),
+                                )))?;
+                                bail!(e);
+                            }
+                        };
+                    }
                 }
             }
-
             // Add completed file
             tx.send(KipUploadMsg::KipFileChunked(kcf))?;
         }
