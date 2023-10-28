@@ -1360,17 +1360,6 @@ fn check_battery() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(windows)]
-fn send_notification(summary: &str, body: &str, hint: Option<Hint>) {
-    Notification::new()
-        .summary(summary)
-        .body(body)
-        .appname("kip")
-        .timeout(10)
-        .show()
-        .expect("Unable to send notification.");
-}
-
 #[cfg(target_os = "macos")]
 fn send_notification(summary: &str, body: &str, hint: Option<Hint>) {
     Notification::new()
@@ -1382,7 +1371,18 @@ fn send_notification(summary: &str, body: &str, hint: Option<Hint>) {
         .expect("Unable to send notification.");
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "windows")]
+fn send_notification(summary: &str, body: &str, hint: Option<Hint>) {
+    Notification::new()
+        .summary(summary)
+        .body(body)
+        .appname("kip")
+        .timeout(10)
+        .show()
+        .expect("Unable to send notification.");
+}
+
+#[cfg(target_os = "linux")]
 fn send_notification(summary: &str, body: &str, hint: Option<Hint>) {
     Notification::new()
         .summary(summary)
