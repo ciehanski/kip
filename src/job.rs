@@ -53,7 +53,7 @@ impl Job {
                     .unwrap()
                     .and_hms_opt(0, 0, 0)
                     .unwrap();
-                DateTime::<Utc>::from_utc(ndt, Utc)
+                TimeZone::from_utc_datetime(&Utc, &ndt)
             }
         };
         Self {

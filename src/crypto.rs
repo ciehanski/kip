@@ -4,7 +4,7 @@
 
 use aead::{Aead, AeadCore, AeadInPlace, KeyInit, OsRng};
 use anyhow::{bail, Result};
-use argon2::{self, Config, ThreadMode, Variant, Version};
+use argon2::{self, Config, Variant, Version};
 use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
 use keyring::Entry;
 use rand::Rng;
@@ -19,7 +19,6 @@ const ARGON_CONF: Config = Config {
     // TODO: change to 2
     time_cost: 1,
     lanes: 1,
-    thread_mode: ThreadMode::Parallel,
     secret: &[],
     ad: &[],
     hash_length: 32,
