@@ -755,23 +755,18 @@ fn main() {
                 match j.start_restore(run, &secret, &output_folder).await {
                     Ok(_) => {
                         // Send success desktop notification
-                        Notification::new()
-                            .summary("Restore Success")
-                            .body(&format!("job '{job}' restore from '{}' completed.", j.provider_name()))
-                            .appname("kip")
-                            .hint(Hint::Category("transfer.complete".to_owned()))
-                            .timeout(10)
-                            .show().expect("Unable to send notification.");
+                        send_notification(
+                            "Restore Success",
+                            &format!("job '{job}' restore from '{}' completed.", j.provider_name()),
+                            Some(Hint::Category("transfer.complete".to_owned()))
+                        );
                     }
                     Err(e) => {
-                        // Send error desktop notification
-                        Notification::new()
-                            .summary("Restore Error")
-                            .body(&format!("job '{job}' restore from '{}' failed: {e}", j.provider_name()))
-                            .appname("kip")
-                            .hint(Hint::Category("transfer.error".to_owned()))
-                            .timeout(10)
-                            .show().expect("Unable to send notification.");
+                        send_notification(
+                            "Restore Error",
+                            &format!("job '{job}' restore from '{}' failed: {e}", j.provider_name()),
+                            Some(Hint::Category("transfer.error".to_owned()))
+                        );
                         terminate!(2, "{} {e}", "[ERR]".red());
                     }
                 };
