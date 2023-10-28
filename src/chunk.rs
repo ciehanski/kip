@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use tokio_stream::StreamExt;
 
 // 1 MB is min chunk size
-const MIN_SIZE: u32 = 1 * 1024 * 1024;
+const MIN_SIZE: u32 = 1024 * 1024;
 // 4 MB is average chunk size
 const AVG_SIZE: u32 = 4 * 1024 * 1024;
 // 10 MB is max chunk size
@@ -91,6 +91,10 @@ impl KipFileChunked {
     pub fn len(&self) -> usize {
         self.chunks.len()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.chunks.is_empty()
+    }
 }
 
 /// chunk_compress_encrypt takes an array of bytes and chunks
@@ -102,12 +106,7 @@ pub async fn chunk_file<P: AsRef<Path>>(
     bytes: &[u8],
 ) -> Result<(KipFileChunked, HashMap<FileChunk, &[u8]>)> {
     // Create a new chunker & stream over bytes
-    let mut chunker = AsyncStreamCDC::new(
-        bytes,
-        MIN_SIZE.try_into()?,
-        AVG_SIZE.try_into()?,
-        MAX_SIZE.try_into()?,
-    );
+    let mut chunker = AsyncStreamCDC::new(bytes, MIN_SIZE, AVG_SIZE, MAX_SIZE);
     let mut stream = Box::pin(chunker.as_stream());
 
     // For each chunk generated, add it to chunks collection to return
@@ -125,7 +124,7 @@ pub async fn chunk_file<P: AsRef<Path>>(
             chunk_hash,
             entry.offset.try_into()?,
             entry.length,
-            end.try_into()?,
+            end,
         );
         // Insert newly created chunk for return
         chunks.insert(chunk.clone(), chunk_bytes);

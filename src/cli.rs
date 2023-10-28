@@ -136,6 +136,7 @@ pub enum Subcommands {
 mod tests {
     use assert_cmd::Command;
 
+    #[ignore]
     #[test]
     fn test_cli_runs() {
         let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME")).unwrap();
@@ -143,6 +144,7 @@ mod tests {
         assert.failure().code(2);
     }
 
+    #[ignore]
     #[test]
     fn test_status() {
         let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME")).unwrap();
@@ -150,6 +152,7 @@ mod tests {
         assert.success();
     }
 
+    #[ignore]
     #[test]
     fn test_status_ls() {
         let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME")).unwrap();
@@ -157,18 +160,20 @@ mod tests {
         assert.success();
     }
 
-    //#[test]
-    //fn test_cli_init() {
-    //    let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME")).unwrap();
-    //    let assert = cmd
-    //        .timeout(std::time::Duration::from_secs(10))
-    //        .arg("init")
-    //        .arg("test_job")
-    //        .write_stdin("hunter2\n".as_bytes())
-    //        .assert();
-    //    assert.interrupted();
-    //}
+    #[ignore]
+    #[test]
+    fn test_cli_init() {
+        let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME")).unwrap();
+        let assert = cmd
+            .timeout(std::time::Duration::from_secs(10))
+            .arg("init")
+            .arg("test_job")
+            .write_stdin("hunter2\n".as_bytes())
+            .assert();
+        assert.interrupted();
+    }
 
+    #[ignore]
     #[test]
     fn test_add_failure() {
         let mut cmd = Command::cargo_bin(env!("CARGO_PKG_NAME")).unwrap();

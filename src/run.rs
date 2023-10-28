@@ -245,7 +245,7 @@ impl Run {
                 debug!("walking directory: {}", kf.path_str());
                 for entry in WalkDir::new(&kf.path).follow_links(follow_links) {
                     let entry = entry?;
-                    let entry_kf = KipFile::new(entry.path().to_path_buf())?;
+                    let entry_kf = KipFile::new(entry.path())?;
 
                     // If a directory, skip since upload will create
                     // the parent folder by default
@@ -818,7 +818,7 @@ impl Run {
                     cursor.seek(SeekFrom::Start(chk.offset.try_into()?))?;
                     cursor.write_all(cb)?;
                 }
-                let decrypted = decrypt_decompress(&mut tvec[..], secret, self.compress).await?;
+                let decrypted = decrypt_decompress(&tvec[..], secret, self.compress).await?;
                 // Hash the restored file and compare it to
                 // the original KipFile hash
                 debug!("comparing hash with the original file's hash");

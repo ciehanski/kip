@@ -155,15 +155,12 @@ impl KipProvider for KipS3 {
                         .continuation_token(token)
                         .send()
                         .await?;
-                    match paginated_result.contents {
-                        Some(prc) => {
-                            filtered.extend(
-                                prc.into_iter()
-                                    .filter(|obj| filter_job_id(obj.key(), job_id)),
-                            );
-                        }
-                        None => (),
-                    };
+                    if let Some(prc) = paginated_result.contents {
+                        filtered.extend(
+                            prc.into_iter()
+                                .filter(|obj| filter_job_id(obj.key(), job_id)),
+                        );
+                    }
                     cont_token = paginated_result.next_continuation_token;
                 }
                 filtered

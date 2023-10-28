@@ -443,11 +443,11 @@ impl KipFile {
         self.path.display().to_string()
     }
 
-    pub fn is_empty(&self) -> Result<bool> {
+    pub fn is_empty(&self) -> bool {
         if self.len == 0 {
-            return Ok(true);
+            return true;
         }
-        Ok(false)
+        false
     }
 
     pub fn is_file(&self) -> Result<bool> {

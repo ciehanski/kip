@@ -30,11 +30,11 @@ impl KipGdrive {
     const _API_RATE_LIMIT: u64 = 20_000;
     const _API_RATE_LIMIT_PERIOD: u64 = 100;
     // OAuth Client Settings
-    const REDIRECT_URI: &str = "http://127.0.0.1";
-    const AUTH_URI: &str = "https://accounts.google.com/o/oauth2/auth";
-    const TOKEN_URI: &str = "https://oauth2.googleapis.com/token";
-    const AUTH_PROVIDER: &str = "https://www.googleapis.com/oauth2/v1/certs";
-    const TOKEN_STORAGE: &str = "gdrive_tokencache.json";
+    const REDIRECT_URI: &'static str = "http://127.0.0.1";
+    const AUTH_URI: &'static str = "https://accounts.google.com/o/oauth2/auth";
+    const TOKEN_URI: &'static str = "https://oauth2.googleapis.com/token";
+    const AUTH_PROVIDER: &'static str = "https://www.googleapis.com/oauth2/v1/certs";
+    const TOKEN_STORAGE: &'static str = "gdrive_tokencache.json";
     // Request Consts
     const LIST_PAGE_SIZE: i32 = 5_000;
 
@@ -249,15 +249,12 @@ impl KipProvider for KipGdrive {
                         .include_items_from_all_drives(true)
                         .doit()
                         .await?;
-                    match paginated_result.files {
-                        Some(prc) => {
-                            filtered.extend(
-                                prc.into_iter()
-                                    .filter(|obj| filter_job_id(obj.name.clone(), job_id)),
-                            );
-                        }
-                        None => (),
-                    };
+                    if let Some(prc) = paginated_result.files {
+                        filtered.extend(
+                            prc.into_iter()
+                                .filter(|obj| filter_job_id(obj.name.clone(), job_id)),
+                        );
+                    }
                     paginated = paginated_result.next_page_token;
                 }
                 filtered

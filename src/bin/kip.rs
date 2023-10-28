@@ -664,13 +664,11 @@ fn main() {
                             }
                         }
                         // Send success desktop notification
-                        Notification::new()
-                            .summary("Backup Success")
-                            .body(&format!("job '{job}' upload to '{}' completed.", j.provider_name()))
-                            .appname("kip")
-                            .hint(Hint::Category("transfer.complete".to_owned()))
-                            .timeout(10)
-                            .show().expect("Unable to send notification.");
+                        send_notification(
+                            "Backup Success", 
+                            &format!("job '{job}' upload to '{}' completed.", j.provider_name()), 
+                            Some(Hint::Category("transfer.complete".to_owned()))
+                        );
                     }
                     Err(e) => {
                         // Send error email if setting enabled
@@ -695,13 +693,11 @@ fn main() {
                             }
                         }
                         // Send error desktop notification
-                        Notification::new()
-                            .summary("Backup Error")
-                            .body(&format!("job '{job}' upload to '{}' failed: {e}", j.provider_name()))
-                            .appname("kip")
-                            .hint(Hint::Category("transfer.error".to_owned()))
-                            .timeout(10)
-                            .show().expect("Unable to send notification.");
+                        send_notification(
+                            "Backup Error",
+                            &format!("job '{job}' upload to '{}' failed: {e}", j.provider_name()),
+                            Some(Hint::Category("transfer.error".to_owned()))
+                        );
                         // Terminate app
                         terminate!(
                             8,
@@ -1362,4 +1358,38 @@ fn check_battery() -> anyhow::Result<()> {
         anyhow::bail!("unable to gather battery information.")
     }
     Ok(())
+}
+
+#[cfg(windows)]
+fn send_notification(summary: &str, body: &str, hint: Option<Hint>) {
+    Notification::new()
+        .summary(summary)
+        .body(body)
+        .appname("kip")
+        .timeout(10)
+        .show()
+        .expect("Unable to send notification.");
+}
+
+#[cfg(target_os = "macos")]
+fn send_notification(summary: &str, body: &str, hint: Option<Hint>) {
+    Notification::new()
+        .summary(summary)
+        .body(body)
+        .appname("kip")
+        .timeout(10)
+        .show()
+        .expect("Unable to send notification.");
+}
+
+#[cfg(unix)]
+fn send_notification(summary: &str, body: &str, hint: Option<Hint>) {
+    Notification::new()
+        .summary(summary)
+        .body(body)
+        .appname("kip")
+        .hint(hint.unwrap())
+        .timeout(10)
+        .show()
+        .expect("Unable to send notification.");
 }
