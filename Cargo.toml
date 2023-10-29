@@ -52,7 +52,7 @@ battery = "0.7.8"
 notify-rust = "4"
 
 [dev-dependencies]
-criterion = "0.4"
+criterion = "0.5"
 tempfile = "3.3"
 assert_cmd = "2.0"
 
