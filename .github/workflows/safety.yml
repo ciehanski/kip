@@ -56,6 +56,6 @@ jobs:
           components: miri
 
       - name: cargo miri test
-        run: cargo miri test
+        run: cargo miri test -Zmiri-disable-isolation
         env:
           MIRIFLAGS: ""
