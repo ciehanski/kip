@@ -3,7 +3,7 @@
 //
 use super::KipUploadOpts;
 use crate::chunk::FileChunk;
-use crate::providers::{KipProvider};
+use crate::providers::KipProvider;
 use anyhow::{bail, Result};
 use async_trait::async_trait;
 use aws_sdk_s3::config::Region;

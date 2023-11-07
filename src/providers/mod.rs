@@ -12,7 +12,7 @@ use self::s3::KipS3;
 use self::usb::KipUsb;
 use crate::chunk::FileChunk;
 use crate::run::KipUploadMsg;
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use async_trait::async_trait;
 use google_drive3::hyper::client::HttpConnector;
 use google_drive3::{hyper_rustls::HttpsConnector, DriveHub};
@@ -50,7 +50,10 @@ impl KipProviders {
         match self {
             Self::S3(s3) => s3.aws_bucket.clone(),
             Self::Usb(usb) => usb.name.clone(),
-            Self::Gdrive(gdrive) => gdrive.parent_folder.clone().unwrap_or(String::from("Google Drive")),
+            Self::Gdrive(gdrive) => gdrive
+                .parent_folder
+                .clone()
+                .unwrap_or(String::from("Google Drive")),
         }
     }
 
@@ -62,23 +65,25 @@ impl KipProviders {
         chunk_bytes: &'b [u8],
     ) -> Result<usize> {
         match self {
-            Self::S3(s3) => {
-                match client {
-                    KipClient::S3(s3_client) => s3.upload(Some(s3_client), opts, chunk, chunk_bytes).await,
-                    _ => {
-                        bail!("s3 client not provided")
-                    }
+            Self::S3(s3) => match client {
+                KipClient::S3(s3_client) => {
+                    s3.upload(Some(s3_client), opts, chunk, chunk_bytes).await
+                }
+                _ => {
+                    bail!("s3 client not provided")
                 }
             },
             Self::Usb(usb) => usb.upload(None, opts, chunk, chunk_bytes).await,
-            Self::Gdrive(gdrive) => {
-                match client {
-                    KipClient::Gdrive(gdrive_client) => gdrive.upload(Some(gdrive_client), opts, chunk, chunk_bytes).await,
-                    _ => {
-                        bail!("gdrive client not provided")
-                    }
+            Self::Gdrive(gdrive) => match client {
+                KipClient::Gdrive(gdrive_client) => {
+                    gdrive
+                        .upload(Some(gdrive_client), opts, chunk, chunk_bytes)
+                        .await
                 }
-            }
+                _ => {
+                    bail!("gdrive client not provided")
+                }
+            },
         }
     }
 }

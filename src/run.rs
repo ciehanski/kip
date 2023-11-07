@@ -3,8 +3,6 @@
 //
 
 use crate::chunk::chunk_file;
-use tokio::task::JoinHandle;
-use uuid::Uuid;
 use crate::chunk::{FileChunk, KipFileChunked};
 use crate::compress::{
     compress_brotli, compress_gzip, compress_lzma, compress_zstd, decompress_brotli,
@@ -12,8 +10,8 @@ use crate::compress::{
 };
 use crate::crypto::{decrypt, encrypt_bytes, encrypt_in_place};
 use crate::job::{Job, KipFile, KipStatus};
-use crate::providers::{KipUploadOpts, KipClient};
 use crate::providers::gdrive::generate_gdrive_hub;
+use crate::providers::{KipClient, KipUploadOpts};
 use crate::providers::{KipProvider, KipProviders};
 use anyhow::{bail, Result};
 use chrono::prelude::*;
@@ -31,9 +29,11 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::fs::{create_dir_all, read, File, OpenOptions};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt, SeekFrom};
-use tokio::sync::{Semaphore, OwnedSemaphorePermit};
 use tokio::sync::{mpsc::unbounded_channel, mpsc::UnboundedSender, Mutex};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::task::JoinHandle;
 use tracing::{debug, error, info, instrument, warn};
+use uuid::Uuid;
 use walkdir::WalkDir;
 
 // 500 MB
@@ -126,7 +126,7 @@ impl Run {
         // Rate limiting amount of concurrent uploads
         let semaphore = Arc::new(Semaphore::new(CONCURRENT_FILE_UPLOADS));
 
-        // Convert job KipFile's into async stream 
+        // Convert job KipFile's into async stream
         let mut kf_stream = tokio_stream::iter(job.files.clone());
 
         // Check if file is excluded
@@ -237,7 +237,7 @@ impl Run {
                     secret.clone(),
                     Arc::clone(&progress),
                     upload_tx.clone(),
-                    limiter_permit
+                    limiter_permit,
                 );
 
                 // Add file upload future join handler to vec
@@ -274,7 +274,7 @@ impl Run {
                         secret.clone(),
                         Arc::clone(&progress),
                         upload_tx.clone(),
-                        limiter_permit
+                        limiter_permit,
                     );
 
                     // Add file upload future join handler to vec
@@ -432,7 +432,8 @@ impl Run {
             // Either S3, Gdrive, or USB
             for (chunk, chunk_bytes) in chunks {
                 debug!("starting S3 upload");
-                match job.provider 
+                match job
+                    .provider
                     .upload(
                         &client,
                         KipUploadOpts::new(job.id, tx.clone()),
@@ -694,42 +695,47 @@ impl Run {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn upload_future(run: Arc<Run>, client: Arc<KipClient>, kf: Arc<KipFile>, job: Arc<Job>, secret: String, progress: Arc<Mutex<Progress>>, upload_tx: UnboundedSender<KipUploadMsg>, limiter_permit: OwnedSemaphorePermit) -> JoinHandle<()>{
+fn upload_future(
+    run: Arc<Run>,
+    client: Arc<KipClient>,
+    kf: Arc<KipFile>,
+    job: Arc<Job>,
+    secret: String,
+    progress: Arc<Mutex<Progress>>,
+    upload_tx: UnboundedSender<KipUploadMsg>,
+    limiter_permit: OwnedSemaphorePermit,
+) -> JoinHandle<()> {
     let path = kf.path.display().to_string();
     tokio::task::spawn(async move {
         match run
             .start_inner(client, kf, job, &secret, progress, upload_tx.clone())
-                    .await
-                {
-                    Ok(_) => {
-                        info!("upload succedded: {}", path);
-                    }
-                    Err(e) => {
-                        error!("error during upload: {e}");
-                        upload_tx
-                            .send(KipUploadMsg::Error(e.to_string()))
-                            .unwrap_or_else(|se| {
-                                error!("error sending log: {e} to main thread -> send error: {se}");
-                            });
-                    }
-                };
-                // Drop semaphore permit
-                drop(limiter_permit);
-            })
+            .await
+        {
+            Ok(_) => {
+                info!("upload succedded: {}", path);
+            }
+            Err(e) => {
+                error!("error during upload: {e}");
+                upload_tx
+                    .send(KipUploadMsg::Error(e.to_string()))
+                    .unwrap_or_else(|se| {
+                        error!("error sending log: {e} to main thread -> send error: {se}");
+                    });
+            }
+        };
+        // Drop semaphore permit
+        drop(limiter_permit);
+    })
 }
 
 fn set_chunk_path(kcf: &mut KipFileChunked, provider: KipProviders, jid: Uuid, hash: &str) {
     if let Some(c) = kcf.chunks.get_mut(hash) {
         match provider {
             KipProviders::S3(_) => {
-                c.set_remote_path(&format!(
-                    "{jid}/chunks/{hash}.chunk"
-                ));
+                c.set_remote_path(&format!("{jid}/chunks/{hash}.chunk"));
             }
             KipProviders::Usb(_) => {
-                c.set_remote_path(&format!(
-                    "{jid}/chunks/{hash}.chunk",
-                ));
+                c.set_remote_path(&format!("{jid}/chunks/{hash}.chunk",));
             }
             KipProviders::Gdrive(ref gd) => {
                 c.set_remote_path(&format!(

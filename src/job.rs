@@ -10,12 +10,12 @@ use anyhow::{bail, Context, Result};
 use chrono::prelude::*;
 use colored::*;
 use crypto_hash::{hex_digest, Algorithm};
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::env;
 use std::fmt::{Debug, Display};
 use std::path::{Path, PathBuf};
-use futures::StreamExt;
 use std::sync::Arc;
 use tracing::instrument;
 use uuid::Uuid;
@@ -104,7 +104,7 @@ impl Job {
                 self.compress.level,
             ),
         );
-        // Create Arc of current job to avoid 
+        // Create Arc of current job to avoid
         // clones for each run
         let job_arc = Arc::new(self.clone());
         // Set job metadata
@@ -112,10 +112,7 @@ impl Job {
         // Set provider env vars for backup
         self.set_provider_env_vars()?;
         // Tell the run to start uploading
-        match r
-            .start(job_arc, secret.to_string(), follow_links)
-            .await
-        {
+        match r.start(job_arc, secret.to_string(), follow_links).await {
             Ok(_) => {
                 // Reset provider env vars to nil
                 self.zeroize_provider_env_vars();
