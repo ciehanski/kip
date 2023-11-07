@@ -138,20 +138,20 @@ pub async fn chunk_file<P: AsRef<Path>>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs::read;
+    use tokio::fs::read;
 
     #[tokio::test]
     async fn test_chunk_single_chunk_file() {
         let mut contents = vec![];
         if !cfg!(windows) {
             // Unix, Mac, Linux, etc
-            let content_result = read("test/vandy.jpg");
+            let content_result = read("test/vandy.jpg").await;
             assert!(content_result.is_ok());
             let mut cr = content_result.unwrap();
             contents.append(&mut cr);
         } else {
             // Windows
-            let content_result = read(r".\test\vandy.jpg");
+            let content_result = read(r".\test\vandy.jpg").await;
             assert!(content_result.is_ok());
             let mut cr = content_result.unwrap();
             contents.append(&mut cr);
@@ -176,7 +176,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_chunk_multi_chunk_file() {
-        let content_result = read("test/dummyfile");
+        let content_result = read("test/dummyfile").await;
         assert!(content_result.is_ok());
         let contents = content_result.unwrap();
         let chunk_hmap_result = chunk_file(
