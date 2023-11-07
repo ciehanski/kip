@@ -54,7 +54,7 @@ impl FileChunk {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct KipFileChunked {
     pub file: KipFile,
-    pub chunks: Vec<FileChunk>,
+    pub chunks: HashMap<String, FileChunk>,
 }
 
 impl KipFileChunked {
@@ -71,12 +71,13 @@ impl KipFileChunked {
                 hash: file_hash.into(),
                 len,
             },
-            chunks: Vec::new(),
+            chunks: HashMap::new(),
         }
     }
 
     pub fn add_chunk(&mut self, chunk: FileChunk) {
-        self.chunks.push(chunk);
+        let hash = chunk.hash.clone();
+        self.chunks.insert(hash, chunk);
     }
 
     // Checks if a certain file backed up in a specific run
@@ -175,11 +176,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_chunk_multi_chunk_file() {
-        let content_result = read("test/kip");
+        let content_result = read("test/dummyfile");
         assert!(content_result.is_ok());
         let contents = content_result.unwrap();
         let chunk_hmap_result = chunk_file(
-            &Path::new("test/kip"),
+            &Path::new("test/dummyfile"),
             String::new(),
             contents.len(),
             &contents,
