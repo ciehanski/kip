@@ -53,12 +53,12 @@ impl KipGdrive {
 
 #[async_trait]
 impl KipProvider for KipGdrive {
-    type Uploader = DriveHub<HttpsConnector<HttpConnector>>;
+    type Client = DriveHub<HttpsConnector<HttpConnector>>;
     type Item = File;
 
     async fn upload<'b>(
         &self,
-        client: Option<&Self::Uploader>,
+        client: Option<&Self::Client>,
         opts: KipUploadOpts,
         chunk: &FileChunk,
         chunk_bytes: &'b [u8],
@@ -132,8 +132,6 @@ impl KipProvider for KipGdrive {
                     "application/octet-stream".parse().unwrap(),
                 )
                 .await?;
-            // TODO: rework
-            //chunk.set_remote_path(result.id.unwrap());
             Ok(ce_bytes_len)
         } else {
             bail!("gdrive client not provided")

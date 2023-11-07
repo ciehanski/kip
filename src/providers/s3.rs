@@ -3,13 +3,13 @@
 //
 use super::KipUploadOpts;
 use crate::chunk::FileChunk;
-use crate::providers::KipProvider;
+use crate::providers::{KipProvider};
 use anyhow::{bail, Result};
 use async_trait::async_trait;
 use aws_sdk_s3::config::Region;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::types::Object;
-use aws_sdk_s3::Client;
+use aws_sdk_s3::Client as S3Client;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt;
@@ -37,12 +37,12 @@ impl KipS3 {
 
 #[async_trait]
 impl KipProvider for KipS3 {
-    type Uploader = Client;
+    type Client = S3Client;
     type Item = Object;
 
     async fn upload<'b>(
         &self,
-        client: Option<&Self::Uploader>,
+        client: Option<&Self::Client>,
         opts: KipUploadOpts,
         chunk: &FileChunk,
         chunk_bytes: &'b [u8],
@@ -72,7 +72,7 @@ impl KipProvider for KipS3 {
             .credentials_cache(aws_credential_types::cache::CredentialsCache::lazy())
             .load()
             .await;
-        let s3_client = Client::new(&s3_conf);
+        let s3_client = S3Client::new(&s3_conf);
         let result = s3_client
             .get_object()
             .bucket(self.aws_bucket.clone())
@@ -96,7 +96,7 @@ impl KipProvider for KipS3 {
             .credentials_cache(aws_credential_types::cache::CredentialsCache::lazy())
             .load()
             .await;
-        let s3_client = Client::new(&s3_conf);
+        let s3_client = S3Client::new(&s3_conf);
         // Delete
         s3_client
             .delete_object()
@@ -132,7 +132,7 @@ impl KipProvider for KipS3 {
             .credentials_cache(aws_credential_types::cache::CredentialsCache::lazy())
             .load()
             .await;
-        let s3_client = Client::new(&s3_conf);
+        let s3_client = S3Client::new(&s3_conf);
         let result = s3_client
             .list_objects_v2()
             .bucket(self.aws_bucket.clone())

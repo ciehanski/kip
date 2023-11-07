@@ -10,8 +10,8 @@ use anyhow::Result;
 use async_trait::async_trait;
 use memmap2::MmapOptions;
 use serde::{Deserialize, Serialize};
-use std::fs::create_dir_all;
 use std::path::{Path, PathBuf};
+use tokio::fs::create_dir_all;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tracing::debug;
@@ -45,12 +45,12 @@ impl KipUsb {
 
 #[async_trait]
 impl KipProvider for KipUsb {
-    type Uploader = ();
+    type Client = ();
     type Item = KipFile;
 
     async fn upload<'b>(
         &self,
-        _client: Option<&Self::Uploader>,
+        _client: Option<&Self::Client>,
         opts: KipUploadOpts,
         chunk: &FileChunk,
         chunk_bytes: &'b [u8],
@@ -60,7 +60,8 @@ impl KipProvider for KipUsb {
             "{}/{}/chunks/",
             self.root_path.display(),
             opts.job_id
-        )))?;
+        )))
+        .await?;
         // Get amount of bytes uploaded in this chunk
         // after compression and encryption
         let ce_bytes_len = chunk_bytes.len();
