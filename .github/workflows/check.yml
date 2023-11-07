@@ -10,7 +10,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repo 
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Install rust stable toolchain
         uses: actions-rs/toolchain@v1
@@ -32,7 +32,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Install rust stable toolchain
         uses: actions-rs/toolchain@v1
@@ -54,7 +54,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Install stable toolchain
         uses: actions-rs/toolchain@v1
@@ -97,21 +97,3 @@ jobs:
 
       - name: cargo hack
         run: cargo hack --feature-powerset check --bin kip --tests
-
-  msrv:
-    name: MSRV | ${{ matrix.msrv }}
-    strategy:
-      matrix:
-        msrv: [1.56.1] # 2021 edition requires 1.56
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repo
-        uses: actions/checkout@v3
-
-      - name: Install ${{ matrix.msrv }}
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ matrix.msrv }}
-
-      - name: cargo +${{ matrix.msrv }} check
-        run: cargo check

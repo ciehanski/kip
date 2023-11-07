@@ -1,7 +1,7 @@
 # borrowed ideas from jonhoo :)
 # https://github.com/jonhoo/rust-ci-conf/blob/main/.github/workflows/safety.yml
 
-name: safety
+name: Safety
 on:
   push:
     branches: [main, dev]
@@ -11,7 +11,7 @@ jobs:
   sanitizers:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           submodules: true
       - name: Install Nightly
@@ -43,7 +43,7 @@ jobs:
   miri:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           submodules: true
       - run: |
