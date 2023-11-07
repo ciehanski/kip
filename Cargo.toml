@@ -33,7 +33,7 @@ chacha20poly1305 = "0.10.1"
 crypto-hash = "0.3.4"
 rust-argon2 = "2.0.0"
 zeroize = "1.6"
-async-compression = { version = "0.4.1", features = ["tokio", "zstd", "gzip", "lzma", "brotli"] }
+async-compression = { version = "0.4.4", features = ["tokio", "zstd", "gzip", "lzma", "brotli"] }
 keyring = "2.0"
 memmap2 = "0.9.0"
 futures = "0.3"
@@ -44,7 +44,7 @@ pretty-bytes = "0.2"
 comfy-table = "7"
 colored = "2.0"
 humantime = "2.1"
-sysinfo = "0.26"
+sysinfo = "0.29"
 google-drive3 = "4.0.4"
 lettre = { version = "0.10", features = ["tokio1", "tokio1-native-tls"] }
 tera = "1.17"
