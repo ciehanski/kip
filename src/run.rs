@@ -693,6 +693,7 @@ impl Run {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn upload_future(run: Arc<Run>, client: Arc<KipClient>, kf: Arc<KipFile>, job: Arc<Job>, secret: String, progress: Arc<Mutex<Progress>>, upload_tx: UnboundedSender<KipUploadMsg>, limiter_permit: OwnedSemaphorePermit) -> JoinHandle<()>{
     let path = kf.path.display().to_string();
     tokio::task::spawn(async move {
