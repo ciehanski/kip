@@ -114,7 +114,7 @@ mod tests {
     #[tokio::test]
     async fn test_compress_zstd() {
         // Open test file
-        let file_result = std::fs::read("test/kip");
+        let file_result = std::fs::read("test/dummyfile");
         assert!(file_result.is_ok());
         let file_len = file_result.as_ref().unwrap().len();
         // Compress test file
@@ -131,7 +131,7 @@ mod tests {
     #[tokio::test]
     async fn test_decompress_zstd() {
         // Open test file
-        let file_result = std::fs::read("test/kip");
+        let file_result = std::fs::read("test/dummyfile");
         assert!(file_result.is_ok());
         // Compress test file
         let compressed_result =
@@ -145,7 +145,7 @@ mod tests {
     #[tokio::test]
     async fn test_compress_lzma() {
         // Open test file
-        let file_result = std::fs::read("test/kip");
+        let file_result = std::fs::read("test/dummyfile");
         assert!(file_result.is_ok());
         let file_len = file_result.as_ref().unwrap().len();
         // Compress test file
@@ -162,7 +162,7 @@ mod tests {
     #[tokio::test]
     async fn test_decompress_lzma() {
         // Open test file
-        let file_result = std::fs::read("test/kip");
+        let file_result = std::fs::read("test/dummyfile");
         assert!(file_result.is_ok());
         // Compress test file
         let compressed_result =
@@ -176,7 +176,7 @@ mod tests {
     #[tokio::test]
     async fn test_compress_gzip() {
         // Open test file
-        let file_result = std::fs::read("test/kip");
+        let file_result = std::fs::read("test/dummyfile");
         assert!(file_result.is_ok());
         let file_len = file_result.as_ref().unwrap().len();
         // Compress test file
@@ -193,7 +193,7 @@ mod tests {
     #[tokio::test]
     async fn test_decompress_gzip() {
         // Open test file
-        let file_result = std::fs::read("test/kip");
+        let file_result = std::fs::read("test/dummyfile");
         assert!(file_result.is_ok());
         // Compress test file
         let compressed_result =
@@ -207,7 +207,7 @@ mod tests {
     #[tokio::test]
     async fn test_compress_brotili() {
         // Open test file
-        let file_result = std::fs::read("test/kip");
+        let file_result = std::fs::read("test/dummyfile");
         assert!(file_result.is_ok());
         let file_len = file_result.as_ref().unwrap().len();
         // Compress test file
@@ -224,7 +224,7 @@ mod tests {
     #[tokio::test]
     async fn test_decompress_brotli() {
         // Open test file
-        let file_result = std::fs::read("test/kip");
+        let file_result = std::fs::read("test/dummyfile");
         assert!(file_result.is_ok());
         // Compress test file
         let compressed_result =
