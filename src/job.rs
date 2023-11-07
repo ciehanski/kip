@@ -15,6 +15,8 @@ use std::collections::BTreeMap;
 use std::env;
 use std::fmt::{Debug, Display};
 use std::path::{Path, PathBuf};
+use futures::StreamExt;
+use std::sync::Arc;
 use tracing::instrument;
 use uuid::Uuid;
 use walkdir::WalkDir;
@@ -102,13 +104,16 @@ impl Job {
                 self.compress.level,
             ),
         );
+        // Create Arc of current job to avoid 
+        // clones for each run
+        let job_arc = Arc::new(self.clone());
         // Set job metadata
         self.last_status = KipStatus::IN_PROGRESS;
         // Set provider env vars for backup
         self.set_provider_env_vars()?;
         // Tell the run to start uploading
         match r
-            .start(self.to_owned(), secret.to_string(), follow_links)
+            .start(job_arc, secret.to_string(), follow_links)
             .await
         {
             Ok(_) => {
@@ -212,7 +217,9 @@ impl Job {
         for run in self.runs.iter() {
             for kfc in run.1.delta.iter() {
                 if kfc.file.path == fpath {
-                    for chunk in kfc.chunks.iter() {
+                    // Convert chunks into async stream
+                    let mut chunks_stream = tokio_stream::iter(kfc.chunks.values());
+                    while let Some(chunk) = chunks_stream.next().await {
                         // Delete
                         match &self.provider {
                             KipProviders::S3(s3) => {
@@ -242,7 +249,7 @@ impl Job {
 
     /// Get correct number of files in job (not just...
     /// the len of 'files' Vec)
-    pub fn get_files_amt(&self, follow_links: bool) -> Result<u64> {
+    pub fn set_files_amt(&mut self, follow_links: bool) -> Result<()> {
         let mut correct_files_num: u64 = 0;
         for f in self.files.iter() {
             if f.path.exists() && f.path.is_dir() {
@@ -256,7 +263,8 @@ impl Job {
                 correct_files_num += 1;
             }
         }
-        Ok(correct_files_num)
+        self.files_amt = correct_files_num;
+        Ok(())
     }
 
     /// Read each file in the job and store their SHA256 hashes
@@ -266,18 +274,7 @@ impl Job {
             if kf.is_file()? {
                 let file = open_file(&kf.path, kf.len.try_into()?).await?;
                 let hash = hex_digest(Algorithm::SHA256, &file);
-                kf.hash = hash.clone();
-
-                // TODO:
-                // Loop through all runs and set the file hashes
-                // of all files changed during the run
-                for (_, r) in self.runs.iter_mut() {
-                    for kfc in r.delta.iter_mut() {
-                        if kf.path == kfc.file.path && kfc.file.hash.is_empty() {
-                            kfc.file.hash = hash.clone();
-                        }
-                    }
-                }
+                kf.set_hash(hash);
             } else {
                 // Set Directory Hash
                 let mut dir_hash_str = String::new();
@@ -287,7 +284,7 @@ impl Job {
                         continue;
                     }
                     let f = open_file(entry.path(), entry.metadata()?.len()).await?;
-                    let hash = hex_digest(Algorithm::SHA256, &f);
+                    let hash = hex_digest(Algorithm::SHA1, &f);
                     // Push the subfile's path (if renamed, moved)
                     dir_hash_str.push_str(&entry.path().display().to_string());
                     // Push the subfile's hash (if updated, changed)
@@ -296,7 +293,7 @@ impl Job {
                 // Hash the colletion of dir's files and their hashes
                 let dir_hash = hex_digest(Algorithm::SHA256, dir_hash_str.as_bytes());
                 // Set the "file"'s dir hash
-                kf.hash = dir_hash;
+                kf.set_hash(dir_hash);
             }
         }
         Ok(())
@@ -435,6 +432,10 @@ impl KipFile {
         })
     }
 
+    pub fn set_hash(&mut self, hash: String) {
+        self.hash = hash;
+    }
+
     pub fn len(&self) -> usize {
         self.len
     }
@@ -463,7 +464,7 @@ mod tests {
     use aws_sdk_s3::config::Region;
 
     #[test]
-    fn test_get_files_amt() {
+    fn test_set_files_amt() {
         let provider = KipProviders::S3(KipS3::new("test1", Region::new("us-east-1".to_owned())));
         let mut j = Job::new(
             "testing1",
@@ -478,12 +479,12 @@ mod tests {
             .push(KipFile::new(PathBuf::from("test/vandy.jpg")).unwrap());
         j.files
             .push(KipFile::new(PathBuf::from("test/random.txt")).unwrap());
-        assert!(j.get_files_amt(false).is_ok());
-        assert_eq!(j.get_files_amt(false).unwrap(), 4)
+        assert!(j.set_files_amt(false).is_ok());
+        assert_eq!(j.files_amt, 4)
     }
 
     #[test]
-    fn test_get_files_amt_dir() {
+    fn test_set_files_amt_dir() {
         let provider = KipProviders::S3(KipS3::new("test1", Region::new("us-east-1".to_owned())));
         let mut j = Job::new(
             "testing1",
@@ -492,8 +493,8 @@ mod tests {
         );
         j.files
             .push(KipFile::new(PathBuf::from("test/test_dir/")).unwrap());
-        assert!(j.get_files_amt(false).is_ok());
-        assert_eq!(j.get_files_amt(false).unwrap(), 4)
+        assert!(j.set_files_amt(false).is_ok());
+        assert_eq!(j.files_amt, 4)
     }
 
     #[tokio::test]
@@ -509,13 +510,13 @@ mod tests {
             j.files
                 .push(KipFile::new(PathBuf::from("test/vandy.jpg")).unwrap());
             j.files
-                .push(KipFile::new(PathBuf::from("test/vandy.jpg")).unwrap());
+                .push(KipFile::new(PathBuf::from("test/random.txt")).unwrap());
         } else {
             // Windows
             j.files
                 .push(KipFile::new(PathBuf::from(r".\test\vandy.jpg")).unwrap());
             j.files
-                .push(KipFile::new(PathBuf::from(r".\test\vandy.jpg")).unwrap());
+                .push(KipFile::new(PathBuf::from(r".\test\random.txt")).unwrap());
         }
         let hash_result = j.get_file_hashes(false).await;
         assert!(hash_result.is_ok());
@@ -525,7 +526,7 @@ mod tests {
         );
         assert_eq!(
             j.files[1].hash,
-            "97ad4887a60dfa689660bad732f92a2871dedf97add169267c43e2955415488d"
+            "44b4cdaf713dfaf961dedb34f07e15604f75eb049c83067ab35bf388b369dbf3"
         )
     }
 
@@ -550,7 +551,7 @@ mod tests {
         assert!(hash_result.is_ok());
         assert_eq!(
             j.files[0].hash,
-            "f1a1615ff5aa5d1df596bf3707ff176cfd8054a669932e7f07f3bfc79de6033a"
+            "d9317775d9b1dccdad75fa47b521b47d2079e813ff290d74a277944efb701909"
         )
     }
 }

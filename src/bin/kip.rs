@@ -409,7 +409,7 @@ fn main() {
                     ).expect("[ERR] unable to create KipFile."));
                 }
                 // Get new files amount for job
-                j.files_amt = j.get_files_amt(cfg.settings.follow_symlinks).unwrap_or_else(|e| {
+                j.set_files_amt(cfg.settings.follow_symlinks).unwrap_or_else(|e| {
                     terminate!(
                         6,
                         "{} failed to get file amounts for {job}: {e}.",
@@ -488,7 +488,7 @@ fn main() {
                             };
                         }
                         // Update files amt for job
-                        j.files_amt = j.get_files_amt(cfg.settings.follow_symlinks).unwrap_or_else(|e| {
+                        j.set_files_amt(cfg.settings.follow_symlinks).unwrap_or_else(|e| {
                             terminate!(
                                 6,
                                 "{} failed to get file amounts for {job}: {e}.",
@@ -617,7 +617,7 @@ fn main() {
                     terminate!(2, "{} job '{job}' doesn't exist.", "[ERR]".red());
                 });
                 // Get new files amount for job
-                j.files_amt = j.get_files_amt(cfg.settings.follow_symlinks).unwrap_or_else(|e| {
+                j.set_files_amt(cfg.settings.follow_symlinks).unwrap_or_else(|e| {
                     terminate!(
                         6,
                         "{} failed to get file amounts for {job}: {e}.",
@@ -735,7 +735,7 @@ fn main() {
                 let output_folder = output_folder.unwrap_or_else(|| {
                     terminate!(2, "{} invalid output folder provided.", "[ERR]".red());
                 });
-                let dmd = std::fs::metadata(&output_folder)
+                let dmd = tokio::fs::metadata(&output_folder).await
                     .expect("[ERR] unable to gather output folder metadata");
                 if !dmd.is_dir() || output_folder.is_empty() {
                     terminate!(
@@ -1286,28 +1286,28 @@ fn confirm_secret(job_name: &str) -> String {
     secret
 }
 
-#[cfg(not(windows))]
-pub fn is_hidden(entry: &walkdir::DirEntry) -> bool {
-    entry
-        .file_name()
-        .to_str()
-        .map(|s| s.starts_with('.'))
-        .unwrap_or(false)
-}
-
-#[cfg(windows)]
-fn is_hidden(entry: &walkdir::DirEntry) -> bool {
-    use std::os::windows::prelude::*;
-
-    let file_path = entry.file_name().to_str().unwrap();
-    let metadata = fs::metadata(file_path).unwrap();
-    let attributes = metadata.file_attributes();
-    if (attributes & 0x2) > 0 {
-        true
-    } else {
-        false
-    }
-}
+//#[cfg(not(windows))]
+//pub fn is_hidden(entry: &walkdir::DirEntry) -> bool {
+//    entry
+//        .file_name()
+//        .to_str()
+//        .map(|s| s.starts_with('.'))
+//        .unwrap_or(false)
+//}
+//
+//#[cfg(windows)]
+//fn is_hidden(entry: &walkdir::DirEntry) -> bool {
+//    use std::os::windows::prelude::*;
+//
+//    let file_path = entry.file_name().to_str().unwrap();
+//    let metadata = std::fs::metadata(file_path).unwrap();
+//    let attributes = metadata.file_attributes();
+//    if (attributes & 0x2) > 0 {
+//        true
+//    } else {
+//        false
+//    }
+//}
 
 fn print_status(status: KipStatus) -> comfy_table::Cell {
     match status {
@@ -1356,7 +1356,7 @@ fn check_battery() -> anyhow::Result<()> {
 }
 
 #[cfg(target_os = "macos")]
-fn send_notification(summary: &str, body: &str, hint: Option<Hint>) {
+fn send_notification(summary: &str, body: &str, _hint: Option<Hint>) {
     Notification::new()
         .summary(summary)
         .body(body)
@@ -1367,7 +1367,7 @@ fn send_notification(summary: &str, body: &str, hint: Option<Hint>) {
 }
 
 #[cfg(target_os = "windows")]
-fn send_notification(summary: &str, body: &str, hint: Option<Hint>) {
+fn send_notification(summary: &str, body: &str, _hint: Option<Hint>) {
     Notification::new()
         .summary(summary)
         .body(body)
