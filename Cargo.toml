@@ -45,7 +45,7 @@ comfy-table = "7"
 colored = "2.0"
 humantime = "2.1"
 sysinfo = "0.29"
-google-drive3 = "4.0.4"
+google-drive3 = "5.0.3"
 lettre = { version = "0.10", features = ["tokio1", "tokio1-native-tls"] }
 tera = "1.17"
 battery = "0.7.8"
