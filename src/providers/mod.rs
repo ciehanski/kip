@@ -32,10 +32,10 @@ pub trait KipProvider {
         chunk: &FileChunk,
         chunk_bytes: &'b [u8],
     ) -> Result<usize>;
-    async fn download(&self, source: &str) -> Result<Vec<u8>>;
-    async fn delete(&self, remote_path: &str) -> Result<()>;
-    async fn contains(&self, job: Uuid, hash: &str) -> Result<bool>;
-    async fn list_all(&self, job: Uuid) -> Result<Vec<Self::Item>>;
+    async fn download(&self, client: Option<&Self::Client>, source: &str) -> Result<Vec<u8>>;
+    async fn delete(&self, client: Option<&Self::Client>, remote_path: &str) -> Result<()>;
+    async fn contains(&self, client: Option<&Self::Client>, job: Uuid, hash: &str) -> Result<bool>;
+    async fn list_all(&self, client: Option<&Self::Client>, job: Uuid) -> Result<Vec<Self::Item>>;
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -85,6 +85,71 @@ impl KipProviders {
                 }
             },
         }
+    }
+
+    pub async fn download<'b>(
+        &self,
+        client: &KipClient,
+        file_name: &str,
+    ) -> Result<Vec<u8>> {
+        match self {
+            Self::S3(s3) => match client {
+                KipClient::S3(client) => {
+                    s3.download(Some(client), file_name).await
+                }
+                _ => {
+                    bail!("s3 client not provided")
+                }
+            },
+            Self::Usb(usb) => usb.download(None, file_name).await,
+            Self::Gdrive(gdrive) => match client {
+                KipClient::Gdrive(client) => {
+                    gdrive.download(Some(client), file_name).await 
+                }
+                _ => {
+                    bail!("gdrive client not provided")
+                }
+            }
+        }
+    }
+
+    pub async fn delete(&self, client: &KipClient, remote_path: &str) -> Result<()> {
+        match self {
+            Self::S3(s3) => match client {
+                KipClient::S3(client) => {
+                    s3.delete(Some(client), remote_path).await
+                }
+                _ => {
+                    bail!("s3 client not provided")
+                }
+            },
+            Self::Usb(usb) => usb.delete(None, remote_path).await,
+            Self::Gdrive(gdrive) => match client {
+                KipClient::Gdrive(client) => {
+                    gdrive.delete(Some(client), remote_path).await
+                }
+                _ => {
+                    bail!("gdrive client not provided")
+                }
+            },
+        }
+    }
+
+    pub async fn get_client(&self) -> Result<KipClient> {
+        Ok(match self {
+            KipProviders::S3(ref s3) => {
+                let s3_conf = aws_config::from_env()
+                    .region(aws_sdk_s3::config::Region::new(s3.aws_region.clone()))
+                    .credentials_cache(aws_credential_types::cache::CredentialsCache::lazy())
+                    .load()
+                    .await;
+                KipClient::S3(aws_sdk_s3::Client::new(&s3_conf))
+            }
+            KipProviders::Usb(_) => KipClient::None,
+            KipProviders::Gdrive(_) => {
+                KipClient::Gdrive(crate::providers::gdrive::generate_gdrive_hub().await?)
+            }
+        })
     }
 }
 

@@ -10,9 +10,8 @@ use crate::compress::{
 };
 use crate::crypto::{decrypt, encrypt_bytes, encrypt_in_place};
 use crate::job::{Job, KipFile, KipStatus};
-use crate::providers::gdrive::generate_gdrive_hub;
 use crate::providers::{KipClient, KipUploadOpts};
-use crate::providers::{KipProvider, KipProviders};
+use crate::providers::KipProviders;
 use anyhow::{bail, Result};
 use chrono::prelude::*;
 use colored::*;
@@ -36,9 +35,7 @@ use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
 use walkdir::WalkDir;
 
-// 500 MB
-pub const MAX_OPEN_FILE_LEN: u64 = 500 * 1024 * 1024;
-const CONCURRENT_FILE_UPLOADS: usize = 5;
+const CONCURRENT_FILE_UPLOADS: usize = 10;
 const MAX_PROGRESS_LABEL_LEN: usize = 57;
 
 /// A "Run" is a backup job with all the metadata
@@ -205,20 +202,7 @@ impl Run {
             }
 
             // Create job's provider client
-            let client = match job.provider {
-                KipProviders::S3(ref s3) => {
-                    let s3_conf = aws_config::from_env()
-                        .region(aws_sdk_s3::config::Region::new(s3.aws_region.clone()))
-                        .credentials_cache(aws_credential_types::cache::CredentialsCache::lazy())
-                        .load()
-                        .await;
-                    Arc::new(KipClient::S3(aws_sdk_s3::Client::new(&s3_conf)))
-                }
-                KipProviders::Usb(_) => Arc::new(KipClient::None),
-                KipProviders::Gdrive(_) => {
-                    Arc::new(KipClient::Gdrive(generate_gdrive_hub().await?))
-                }
-            };
+            let client = Arc::new(job.provider.get_client().await?);
 
             // Check if f is file or directory
             debug!("confirming if file or directory");
@@ -396,7 +380,6 @@ impl Run {
             tx.send(KipUploadMsg::Log(log.clone()))?;
             tx.send(KipUploadMsg::Skipped)?;
             debug!("no changes found");
-            //println!("{log}");
         } else {
             // Create progress bar
             let progress_cancel = Arc::clone(&progress);
@@ -504,66 +487,32 @@ impl Run {
             bail!("nothing to restore, no files were changed on this run.")
         }
 
+        // Create job's provider client
+        let client = job.provider.get_client().await?;
+
         // For each object in the bucket, download it
         let mut counter: u64 = 0;
         for kfc in self.delta.iter() {
+
             let local_path = kfc.file.path.display().to_string();
 
             if kfc.is_single_chunk() {
                 let chunk = kfc.chunks.iter().next().map(|(_, c)| c).unwrap();
-
                 // Download chunk
-                let chunk_bytes = match &job.provider {
-                    KipProviders::S3(ref s3) => match s3.download(&chunk.remote_path).await {
-                        Ok(cb) => cb,
-                        Err(e) => {
-                            let log = format!(
-                                "[{}] {}-{} ⇉ '{}' restore failed. ({counter}/{})",
-                                Utc::now().format("%Y-%m-%d %H:%M:%S"),
-                                job.name,
-                                self.id,
-                                local_path.red(),
-                                self.delta.len(),
-                            );
-                            error!("{log}: {e}");
-                            eprintln!("{log}");
-                            continue;
-                        }
-                    },
-                    KipProviders::Usb(ref usb) => match usb.download(&chunk.remote_path).await {
-                        Ok(cb) => cb,
-                        Err(e) => {
-                            let log = format!(
-                                "[{}] {}-{} ⇉ '{}' restore failed. ({counter}/{})",
-                                Utc::now().format("%y-%m-%d %h:%m:%s"),
-                                job.name,
-                                self.id,
-                                local_path.red(),
-                                self.delta.len(),
-                            );
-                            error!("{log}: {e}");
-                            eprintln!("{log}");
-                            continue;
-                        }
-                    },
-                    KipProviders::Gdrive(ref gdrive) => {
-                        // Gdrive takes file ID, not path
-                        match gdrive.download(&chunk.remote_path).await {
-                            Ok(cb) => cb,
-                            Err(e) => {
-                                let log = format!(
-                                    "[{}] {}-{} ⇉ '{}' restore failed. ({counter}/{})",
-                                    Utc::now().format("%Y-%m-%d %H:%M:%S"),
-                                    job.name,
-                                    self.id,
-                                    local_path.red(),
-                                    self.delta.len(),
-                                );
-                                error!("{log}: {e}");
-                                eprintln!("{log}");
-                                continue;
-                            }
-                        }
+                let chunk_bytes = match job.provider.download(&client, &chunk.remote_path).await {
+                    Ok(cb) => cb,
+                    Err(e) => {
+                        let log = format!(
+                            "[{}] {}-{} ⇉ '{}' restore failed. ({counter}/{})",
+                            Utc::now().format("%Y-%m-%d %H:%M:%S"),
+                            job.name,
+                            self.id,
+                            local_path.red(),
+                            self.delta.len(),
+                        );
+                        error!("{log}: {e}");
+                        eprintln!("{log}");
+                        continue;
                     }
                 };
                 // Decrypt before decompression (if enabled)
@@ -580,32 +529,11 @@ impl Run {
                 // Download all chunks
                 let mut chunks_stream = tokio_stream::iter(kfc.chunks.values());
                 while let Some(chunk) = chunks_stream.next().await {
-                    let chunk_bytes = match &job.provider {
-                        KipProviders::S3(ref s3) => match s3.download(&chunk.remote_path).await {
-                            Ok(cb) => cb,
-                            Err(e) => {
-                                error!("error downloading chunk {}: {e}", &chunk.remote_path);
-                                vec![]
-                            }
-                        },
-                        KipProviders::Usb(ref usb) => {
-                            match usb.download(&chunk.remote_path).await {
-                                Ok(cb) => cb,
-                                Err(e) => {
-                                    error!("error downloading chunk {}: {e}", &chunk.remote_path);
-                                    vec![]
-                                }
-                            }
-                        }
-                        KipProviders::Gdrive(ref gdrive) => {
-                            // Gdrive takes file ID, not path
-                            match gdrive.download(&chunk.remote_path).await {
-                                Ok(cb) => cb,
-                                Err(e) => {
-                                    error!("error downloading chunk {}: {e}", &chunk.remote_path);
-                                    vec![]
-                                }
-                            }
+                    let chunk_bytes = match job.provider.download(&client, &chunk.remote_path).await {
+                        Ok(cb) => cb,
+                        Err(e) => {
+                            error!("error downloading chunk {}: {e}", &chunk.remote_path);
+                            vec![]
                         }
                     };
                     // Ruh-roh, chunk bytes shouldn't be empty,
@@ -655,6 +583,7 @@ impl Run {
                     cursor.write_all(cb).await?;
                 }
                 let decrypted = decrypt_decompress(&mcm[..], secret, self.compress).await?;
+
                 // Hash the restored file and compare it to
                 // the original KipFile hash
                 debug!("comparing hash with the original file's hash");
@@ -671,6 +600,7 @@ impl Run {
                     eprintln!("{log}");
                     continue;
                 }
+
                 // Creates or opens restored file
                 debug!("creating or opening file");
                 let mut cfile = create_file(&kfc.file.path, output_folder).await?;
@@ -833,7 +763,7 @@ pub async fn decrypt_decompress(
 
 pub async fn open_file(path: &Path, file_len: u64) -> Result<Vec<u8>> {
     // Open the file
-    let file = if file_len > MAX_OPEN_FILE_LEN {
+    let file = if file_len > crate::MAX_OPEN_FILE_LEN {
         debug!("opening {} with mmap", path.display());
         // SAFETY: unsafe used here for mmap
         let mmap = unsafe {

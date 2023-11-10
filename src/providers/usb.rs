@@ -80,10 +80,10 @@ impl KipProvider for KipUsb {
         Ok(ce_bytes_len)
     }
 
-    async fn download(&self, file_name: &str) -> Result<Vec<u8>> {
+    async fn download(&self, _client: Option<&Self::Client>, file_name: &str) -> Result<Vec<u8>> {
         // Read result from S3 and convert to bytes
         let path = Path::new(file_name);
-        let bytes = if path.metadata()?.len() > crate::run::MAX_OPEN_FILE_LEN {
+        let bytes = if path.metadata()?.len() > crate::MAX_OPEN_FILE_LEN {
             debug!("opening {} with mmap", path.display());
             // SAFETY: unsafe used here for mmap
             let mmap = unsafe {
@@ -100,7 +100,7 @@ impl KipProvider for KipUsb {
         Ok(bytes)
     }
 
-    async fn delete(&self, file_name: &str) -> Result<()> {
+    async fn delete(&self, _client: Option<&Self::Client>, file_name: &str) -> Result<()> {
         let path = Path::new(file_name);
         if path.is_dir() {
             tokio::fs::remove_dir_all(path).await?;
@@ -110,9 +110,14 @@ impl KipProvider for KipUsb {
         Ok(())
     }
 
-    async fn contains(&self, job_id: Uuid, hash: &str) -> Result<bool> {
+    async fn contains(
+        &self,
+        client: Option<&Self::Client>,
+        job_id: Uuid,
+        hash: &str,
+    ) -> Result<bool> {
         // Check S3 for duplicates of chunk
-        let file_objs = self.list_all(job_id).await?;
+        let file_objs = self.list_all(client, job_id).await?;
         // If the S3 bucket is empty, no need to check for duplicate chunks
         if !file_objs.is_empty() {
             for obj in file_objs {
@@ -125,7 +130,11 @@ impl KipProvider for KipUsb {
         Ok(false)
     }
 
-    async fn list_all(&self, job_id: Uuid) -> Result<Vec<Self::Item>> {
+    async fn list_all(
+        &self,
+        _client: Option<&Self::Client>,
+        job_id: Uuid,
+    ) -> Result<Vec<Self::Item>> {
         let mut kfs = Vec::<KipFile>::new();
         let path_fmt = format!("{}/{}/chunks/", self.root_path.display(), job_id);
         let path = Path::new(&path_fmt).canonicalize()?;

@@ -14,6 +14,9 @@ pub mod providers;
 pub mod run;
 pub mod smtp;
 
+// 500 MB
+pub const MAX_OPEN_FILE_LEN: u64 = 500 * 1024 * 1024;
+
 /// A simple macro to remove some boilerplate
 /// on error or exiting kip.
 #[macro_export]

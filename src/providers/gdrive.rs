@@ -63,7 +63,7 @@ impl KipProvider for KipGdrive {
         chunk: &FileChunk,
         chunk_bytes: &'b [u8],
     ) -> Result<usize> {
-        if let Some(client) = client {
+        if let Some(hub) = client {
             // Check if job's parent folder exists in gdrive
             if self.parent_folder.is_none() {
                 // If the KipGdrive parent_folder is empty, create the folder
@@ -73,7 +73,7 @@ impl KipProvider for KipGdrive {
                     mime_type: Some("application/vnd.google-apps.folder".to_string()),
                     ..Default::default()
                 };
-                let (_, result) = client
+                let (_, result) = hub 
                     .files()
                     .create(req)
                     .add_scope(Scope::File)
@@ -94,7 +94,7 @@ impl KipProvider for KipGdrive {
                     mime_type: Some("application/vnd.google-apps.folder".to_string()),
                     ..Default::default()
                 };
-                let (_, result) = client
+                let (_, result) = hub
                     .files()
                     .create(req)
                     .add_scope(Scope::File)
@@ -119,7 +119,7 @@ impl KipProvider for KipGdrive {
                 parents: Some(vec![self.parent_folder.to_owned().unwrap()]),
                 ..Default::default()
             };
-            let (_, _result) = client
+            let (_, _result) = hub
                 .files()
                 .create(req)
                 .add_scope(Scope::File)
@@ -138,61 +138,70 @@ impl KipProvider for KipGdrive {
         }
     }
 
-    async fn download(&self, file_name: &str) -> Result<Vec<u8>> {
-        // Generate Google Drive Hub
-        let hub = generate_gdrive_hub().await?;
-        // Create download request
-        let req = hub
-            .files()
-            .get(file_name)
-            .supports_team_drives(false)
-            .supports_all_drives(false)
-            .acknowledge_abuse(true)
-            .param("alt", "media");
-        // Send request and parse response into Vec<u8>
-        let result_bytes = match req.doit().await {
-            Ok((resp, _)) => Vec::from(hyper::body::to_bytes(resp.into_body()).await?),
-            Err(e) => match e {
-                Error::HttpError(_)
-                | Error::Io(_)
-                | Error::MissingAPIKey
-                | Error::MissingToken(_)
-                | Error::Cancelled
-                | Error::UploadSizeLimitExceeded(_, _)
-                | Error::Failure(_)
-                | Error::BadRequest(_)
-                | Error::FieldClash(_)
-                | Error::JsonDecodeError(_, _) => bail!("{e}"),
-            },
-        };
-        // Return downloaded chunk bytes
-        Ok(result_bytes)
-    }
-
-    async fn delete(&self, file_name: &str) -> Result<()> {
-        // Generate Google Drive Hub
-        let hub = generate_gdrive_hub().await?;
-        // Delete file
-        match hub.files().delete(file_name).doit().await {
-            Ok(_) => Ok(()),
-            Err(e) => match e {
-                Error::HttpError(_)
-                | Error::Io(_)
-                | Error::MissingAPIKey
-                | Error::MissingToken(_)
-                | Error::Cancelled
-                | Error::UploadSizeLimitExceeded(_, _)
-                | Error::Failure(_)
-                | Error::BadRequest(_)
-                | Error::FieldClash(_)
-                | Error::JsonDecodeError(_, _) => bail!("{e}"),
-            },
+    async fn download(&self, client: Option<&Self::Client>, file_name: &str) -> Result<Vec<u8>> {
+        if let Some(hub) = client {
+            // Create download request
+            let req = hub
+                .files()
+                .get(file_name)
+                .supports_team_drives(false)
+                .supports_all_drives(false)
+                .acknowledge_abuse(true)
+                .param("alt", "media");
+            // Send request and parse response into Vec<u8>
+            let result_bytes = match req.doit().await {
+                Ok((resp, _)) => Vec::from(hyper::body::to_bytes(resp.into_body()).await?),
+                Err(e) => match e {
+                    Error::HttpError(_)
+                    | Error::Io(_)
+                    | Error::MissingAPIKey
+                    | Error::MissingToken(_)
+                    | Error::Cancelled
+                    | Error::UploadSizeLimitExceeded(_, _)
+                    | Error::Failure(_)
+                    | Error::BadRequest(_)
+                    | Error::FieldClash(_)
+                    | Error::JsonDecodeError(_, _) => bail!("{e}"),
+                },
+            };
+            // Return downloaded chunk bytes
+            Ok(result_bytes)
+        } else {
+            bail!("gdrive client not provided")
         }
     }
 
-    async fn contains(&self, _job_id: Uuid, hash: &str) -> Result<bool> {
+    async fn delete(&self, client: Option<&Self::Client>, file_name: &str) -> Result<()> {
+        if let Some(hub) = client {
+            // Delete file
+            match hub.files().delete(file_name).doit().await {
+                Ok(_) => Ok(()),
+                Err(e) => match e {
+                    Error::HttpError(_)
+                    | Error::Io(_)
+                    | Error::MissingAPIKey
+                    | Error::MissingToken(_)
+                    | Error::Cancelled
+                    | Error::UploadSizeLimitExceeded(_, _)
+                    | Error::Failure(_)
+                    | Error::BadRequest(_)
+                    | Error::FieldClash(_)
+                    | Error::JsonDecodeError(_, _) => bail!("{e}"),
+                },
+            }
+        } else {
+            bail!("gdrive client not provided")
+        }
+    }
+
+    async fn contains(
+        &self,
+        client: Option<&Self::Client>,
+        _job_id: Uuid,
+        hash: &str,
+    ) -> Result<bool> {
         // Check Google Drive for duplicates of chunk
-        let gdrive_objs = self.list_all(_job_id).await?;
+        let gdrive_objs = self.list_all(client, _job_id).await?;
         // If Google Drive is empty, no need to check for duplicate chunks
         if !gdrive_objs.is_empty() {
             for obj in gdrive_objs {
@@ -209,87 +218,93 @@ impl KipProvider for KipGdrive {
         Ok(false)
     }
 
-    async fn list_all(&self, job_id: Uuid) -> Result<Vec<Self::Item>> {
-        // Generate Google Drive Hub
-        let hub = generate_gdrive_hub().await?;
-        // Create request to collect all files
-        let result = hub
-            .files()
-            .list()
-            .supports_team_drives(false)
-            .supports_all_drives(true)
-            .spaces("drive")
-            .page_size(Self::LIST_PAGE_SIZE)
-            .include_team_drive_items(false)
-            .include_items_from_all_drives(true);
-        // Send request
-        let gdrive_contents = match result.doit().await {
-            Ok((_, file_list)) => {
-                let mut filtered = match file_list.files {
-                    Some(files) => files
-                        .into_iter()
-                        .filter(|f| filter_job_id(f.name.to_owned(), job_id))
-                        .collect::<Vec<File>>(),
-                    None => vec![],
-                };
-                // Handle pagination
-                let mut paginated = file_list.next_page_token;
-                while let Some(pcf) = paginated {
-                    let (_, paginated_result) = hub
-                        .files()
-                        .list()
-                        .supports_team_drives(false)
-                        .supports_all_drives(true)
-                        .spaces("drive")
-                        .page_size(Self::LIST_PAGE_SIZE)
-                        .page_token(&pcf)
-                        .include_team_drive_items(false)
-                        .include_items_from_all_drives(true)
-                        .doit()
-                        .await?;
-                    if let Some(prc) = paginated_result.files {
-                        filtered.extend(
-                            prc.into_iter()
-                                .filter(|obj| filter_job_id(obj.name.clone(), job_id)),
-                        );
+    async fn list_all(
+        &self,
+        client: Option<&Self::Client>,
+        job_id: Uuid,
+    ) -> Result<Vec<Self::Item>> {
+        if let Some(hub) = client {
+            // Create request to collect all files
+            let result = hub
+                .files()
+                .list()
+                .supports_team_drives(false)
+                .supports_all_drives(true)
+                .spaces("drive")
+                .page_size(Self::LIST_PAGE_SIZE)
+                .include_team_drive_items(false)
+                .include_items_from_all_drives(true);
+            // Send request
+            let gdrive_contents = match result.doit().await {
+                Ok((_, file_list)) => {
+                    let mut filtered = match file_list.files {
+                        Some(files) => files
+                            .into_iter()
+                            .filter(|f| filter_job_id(f.name.to_owned(), job_id))
+                            .collect::<Vec<File>>(),
+                        None => vec![],
+                    };
+                    // Handle pagination
+                    let mut paginated = file_list.next_page_token;
+                    while let Some(pcf) = paginated {
+                        let (_, paginated_result) = hub
+                            .files()
+                            .list()
+                            .supports_team_drives(false)
+                            .supports_all_drives(true)
+                            .spaces("drive")
+                            .page_size(Self::LIST_PAGE_SIZE)
+                            .page_token(&pcf)
+                            .include_team_drive_items(false)
+                            .include_items_from_all_drives(true)
+                            .doit()
+                            .await?;
+                        if let Some(prc) = paginated_result.files {
+                            filtered.extend(
+                                prc.into_iter()
+                                    .filter(|obj| filter_job_id(obj.name.clone(), job_id)),
+                            );
+                        }
+                        paginated = paginated_result.next_page_token;
                     }
-                    paginated = paginated_result.next_page_token;
+                    filtered
                 }
-                filtered
-            }
-            Err(e) => match e {
-                Error::HttpError(_)
-                | Error::Io(_)
-                | Error::MissingAPIKey
-                | Error::MissingToken(_)
-                | Error::Cancelled
-                | Error::UploadSizeLimitExceeded(_, _)
-                | Error::Failure(_)
-                | Error::BadRequest(_)
-                | Error::FieldClash(_)
-                | Error::JsonDecodeError(_, _) => bail!("{e}"),
-            },
-        };
-        // Only check chunks that are within this job's
-        // folder in Gdrive
-        // let mut job_contents = vec![];
-        // for obj in gdrive_contents {
-        //     if let Some(key) = obj.name.clone() {
-        //         // We expect jid to be Some since key was not nil
-        //         if let Some((jid, _)) = key.split_once('/') {
-        //             if jid == job_id.to_string() {
-        //                 job_contents.push(obj);
-        //             };
-        //         } else {
-        //             // error splitting obj key returned from Gdrive
-        //             debug!("error splitting chunk name from Gdrive")
-        //         };
-        //     } else {
-        //         // error, no obj key returned from Gdrive
-        //         debug!("unable to get chunk name from Gdrive")
-        //     }
-        // }
-        Ok(gdrive_contents)
+                Err(e) => match e {
+                    Error::HttpError(_)
+                    | Error::Io(_)
+                    | Error::MissingAPIKey
+                    | Error::MissingToken(_)
+                    | Error::Cancelled
+                    | Error::UploadSizeLimitExceeded(_, _)
+                    | Error::Failure(_)
+                    | Error::BadRequest(_)
+                    | Error::FieldClash(_)
+                    | Error::JsonDecodeError(_, _) => bail!("{e}"),
+                },
+            };
+            // Only check chunks that are within this job's
+            // folder in Gdrive
+            // let mut job_contents = vec![];
+            // for obj in gdrive_contents {
+            //     if let Some(key) = obj.name.clone() {
+            //         // We expect jid to be Some since key was not nil
+            //         if let Some((jid, _)) = key.split_once('/') {
+            //             if jid == job_id.to_string() {
+            //                 job_contents.push(obj);
+            //             };
+            //         } else {
+            //             // error splitting obj key returned from Gdrive
+            //             debug!("error splitting chunk name from Gdrive")
+            //         };
+            //     } else {
+            //         // error, no obj key returned from Gdrive
+            //         debug!("unable to get chunk name from Gdrive")
+            //     }
+            // }
+            Ok(gdrive_contents)
+        } else {
+            bail!("gdrive client not provided")
+        }
     }
 }
 

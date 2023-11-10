@@ -4,7 +4,7 @@
 
 use crate::compress::KipCompressOpts;
 use crate::crypto::{keyring_delete_secret, keyring_get_secret};
-use crate::providers::{KipProvider, KipProviders};
+use crate::providers::KipProviders;
 use crate::run::{open_file, Run};
 use anyhow::{bail, Context, Result};
 use chrono::prelude::*;
@@ -211,28 +211,23 @@ impl Job {
         // and remove them from S3.
         let fpath = Path::new(&f).canonicalize()?;
         self.set_provider_env_vars()?;
+
+        // Create job's provider client
+        let client = self.provider.get_client().await?;
+        
         for run in self.runs.iter() {
             for kfc in run.1.delta.iter() {
                 if kfc.file.path == fpath {
                     // Convert chunks into async stream
                     let mut chunks_stream = tokio_stream::iter(kfc.chunks.values());
+                    // Delete each chunk from provider
                     while let Some(chunk) = chunks_stream.next().await {
-                        // Delete
-                        match &self.provider {
-                            KipProviders::S3(s3) => {
-                                s3.delete(&chunk.remote_path).await?;
-                            }
-                            KipProviders::Usb(usb) => {
-                                usb.delete(&chunk.remote_path).await?;
-                            }
-                            KipProviders::Gdrive(gdrive) => {
-                                gdrive.delete(&chunk.remote_path).await?;
-                            }
-                        };
+                        self.provider.delete(&client, &chunk.remote_path).await?;
                     }
                 }
             }
         }
+
         // Reset provider env vars to nil
         self.zeroize_provider_env_vars();
         // Set job metadata

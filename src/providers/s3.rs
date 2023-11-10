@@ -1,6 +1,7 @@
 //
 // Copyright (c) 2022 Ryan Ciehanski <ryan@ciehanski.com>
 //
+
 use super::KipUploadOpts;
 use crate::chunk::FileChunk;
 use crate::providers::KipProvider;
@@ -65,51 +66,49 @@ impl KipProvider for KipS3 {
         }
     }
 
-    async fn download(&self, file_name: &str) -> Result<Vec<u8>> {
-        // Create S3 client
-        let s3_conf = aws_config::from_env()
-            .region(Region::new(self.aws_region.clone()))
-            .credentials_cache(aws_credential_types::cache::CredentialsCache::lazy())
-            .load()
-            .await;
-        let s3_client = S3Client::new(&s3_conf);
-        let result = s3_client
-            .get_object()
-            .bucket(self.aws_bucket.clone())
-            .key(file_name.to_string())
-            .send()
-            .await?;
-        // Read result from S3 and convert to bytes
-        let mut result_bytes = Vec::<u8>::new();
-        result
-            .body
-            .into_async_read()
-            .read_to_end(&mut result_bytes)
-            .await?;
-        // Return downloaded chunk bytes
-        Ok(result_bytes)
+    async fn download(&self, client: Option<&Self::Client>, file_name: &str) -> Result<Vec<u8>> {
+        if let Some(s3) = client {
+            let result = s3
+                .get_object()
+                .bucket(self.aws_bucket.clone())
+                .key(file_name.to_string())
+                .send()
+                .await?;
+            // Read result from S3 and convert to bytes
+            let mut result_bytes = Vec::<u8>::new();
+            result
+                .body
+                .into_async_read()
+                .read_to_end(&mut result_bytes)
+                .await?;
+            Ok(result_bytes)
+        } else {
+            bail!("s3 client not provided")
+        }
     }
 
-    async fn delete(&self, file_name: &str) -> Result<()> {
-        let s3_conf = aws_config::from_env()
-            .region(Region::new(self.aws_region.clone()))
-            .credentials_cache(aws_credential_types::cache::CredentialsCache::lazy())
-            .load()
-            .await;
-        let s3_client = S3Client::new(&s3_conf);
-        // Delete
-        s3_client
-            .delete_object()
-            .bucket(self.aws_bucket.clone())
-            .key(file_name.to_string())
-            .send()
-            .await?;
-        Ok(())
+    async fn delete(&self, client: Option<&Self::Client>, file_name: &str) -> Result<()> {
+        if let Some(s3) = client {
+            // Delete
+            s3.delete_object()
+                .bucket(self.aws_bucket.clone())
+                .key(file_name.to_string())
+                .send()
+                .await?;
+            Ok(())
+        } else {
+            bail!("s3 client not provided")
+        }
     }
 
-    async fn contains(&self, job_id: Uuid, hash: &str) -> Result<bool> {
+    async fn contains(
+        &self,
+        client: Option<&Self::Client>,
+        job_id: Uuid,
+        hash: &str,
+    ) -> Result<bool> {
         // Check S3 for duplicates of chunk
-        let s3_objs = self.list_all(job_id).await?;
+        let s3_objs = self.list_all(client, job_id).await?;
         // If the S3 bucket is empty, no need to check for duplicate chunks
         if !s3_objs.is_empty() {
             for obj in s3_objs {
@@ -126,70 +125,72 @@ impl KipProvider for KipS3 {
         Ok(false)
     }
 
-    async fn list_all(&self, job_id: Uuid) -> Result<Vec<Self::Item>> {
-        let s3_conf = aws_config::from_env()
-            .region(Region::new(self.aws_region.clone()))
-            .credentials_cache(aws_credential_types::cache::CredentialsCache::lazy())
-            .load()
-            .await;
-        let s3_client = S3Client::new(&s3_conf);
-        let result = s3_client
-            .list_objects_v2()
-            .bucket(self.aws_bucket.clone())
-            .send()
-            .await?;
-        // Convert S3 result into Vec<S3::Object> which can
-        // be used to manipulate the list of files in S3
-        let s3_contents = match result.contents {
-            Some(rc) => {
-                let mut filtered = rc
-                    .into_iter()
-                    .filter(|obj| filter_job_id(obj.key(), job_id))
-                    .collect::<Vec<Object>>();
-                // Handle pagination
-                let mut cont_token = result.next_continuation_token;
-                while let Some(token) = cont_token {
-                    let paginated_result = s3_client
-                        .list_objects_v2()
-                        .bucket(self.aws_bucket.clone())
-                        .continuation_token(token)
-                        .send()
-                        .await?;
-                    if let Some(prc) = paginated_result.contents {
-                        filtered.extend(
-                            prc.into_iter()
-                                .filter(|obj| filter_job_id(obj.key(), job_id)),
-                        );
+    async fn list_all(
+        &self,
+        client: Option<&Self::Client>,
+        job_id: Uuid,
+    ) -> Result<Vec<Self::Item>> {
+        if let Some(s3) = client {
+            let result = s3
+                .list_objects_v2()
+                .bucket(self.aws_bucket.clone())
+                .send()
+                .await?;
+            // Convert S3 result into Vec<S3::Object> which can
+            // be used to manipulate the list of files in S3
+            let s3_contents = match result.contents {
+                Some(rc) => {
+                    let mut filtered = rc
+                        .into_iter()
+                        .filter(|obj| filter_job_id(obj.key(), job_id))
+                        .collect::<Vec<Object>>();
+                    // Handle pagination
+                    let mut cont_token = result.next_continuation_token;
+                    while let Some(token) = cont_token {
+                        let paginated_result = s3
+                            .list_objects_v2()
+                            .bucket(self.aws_bucket.clone())
+                            .continuation_token(token)
+                            .send()
+                            .await?;
+                        if let Some(prc) = paginated_result.contents {
+                            filtered.extend(
+                                prc.into_iter()
+                                    .filter(|obj| filter_job_id(obj.key(), job_id)),
+                            );
+                        }
+                        cont_token = paginated_result.next_continuation_token;
                     }
-                    cont_token = paginated_result.next_continuation_token;
+                    filtered
                 }
-                filtered
-            }
-            None => {
-                // S3 bucket was empty, return an empty Vec
-                return Ok(vec![]);
-            }
-        };
-        // Only check chunks that are within this job's
-        // folder in S3
-        // let mut job_contents = vec![];
-        // for obj in s3_contents {
-        //     if let Some(key) = obj.key.clone() {
-        //         // We expect jid to be Some since key was not nil
-        //         if let Some((jid, _)) = key.split_once('/') {
-        //             if jid == job_id.to_string() {
-        //                 job_contents.push(obj);
-        //             };
-        //         } else {
-        //             // error splitting obj key returned from S3
-        //             bail!("error splitting chunk name from S3")
-        //         };
-        //     } else {
-        //         // error, no obj key returned from S3
-        //         bail!("unable to get chunk name from S3")
-        //     }
-        // }
-        Ok(s3_contents)
+                None => {
+                    // S3 bucket was empty, return an empty Vec
+                    return Ok(vec![]);
+                }
+            };
+            // Only check chunks that are within this job's
+            // folder in S3
+            // let mut job_contents = vec![];
+            // for obj in s3_contents {
+            //     if let Some(key) = obj.key.clone() {
+            //         // We expect jid to be Some since key was not nil
+            //         if let Some((jid, _)) = key.split_once('/') {
+            //             if jid == job_id.to_string() {
+            //                 job_contents.push(obj);
+            //             };
+            //         } else {
+            //             // error splitting obj key returned from S3
+            //             bail!("error splitting chunk name from S3")
+            //         };
+            //     } else {
+            //         // error, no obj key returned from S3
+            //         bail!("unable to get chunk name from S3")
+            //     }
+            // }
+            Ok(s3_contents)
+        } else {
+            bail!("s3 client not provided")
+        }
     }
 }
 
