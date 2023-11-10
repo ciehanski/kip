@@ -214,7 +214,7 @@ impl Job {
 
         // Create job's provider client
         let client = self.provider.get_client().await?;
-        
+
         for run in self.runs.iter() {
             for kfc in run.1.delta.iter() {
                 if kfc.file.path == fpath {

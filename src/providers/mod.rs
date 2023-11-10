@@ -87,47 +87,35 @@ impl KipProviders {
         }
     }
 
-    pub async fn download<'b>(
-        &self,
-        client: &KipClient,
-        file_name: &str,
-    ) -> Result<Vec<u8>> {
+    pub async fn download<'b>(&self, client: &KipClient, file_name: &str) -> Result<Vec<u8>> {
         match self {
             Self::S3(s3) => match client {
-                KipClient::S3(client) => {
-                    s3.download(Some(client), file_name).await
-                }
+                KipClient::S3(client) => s3.download(Some(client), file_name).await,
                 _ => {
                     bail!("s3 client not provided")
                 }
             },
             Self::Usb(usb) => usb.download(None, file_name).await,
             Self::Gdrive(gdrive) => match client {
-                KipClient::Gdrive(client) => {
-                    gdrive.download(Some(client), file_name).await 
-                }
+                KipClient::Gdrive(client) => gdrive.download(Some(client), file_name).await,
                 _ => {
                     bail!("gdrive client not provided")
                 }
-            }
+            },
         }
     }
 
     pub async fn delete(&self, client: &KipClient, remote_path: &str) -> Result<()> {
         match self {
             Self::S3(s3) => match client {
-                KipClient::S3(client) => {
-                    s3.delete(Some(client), remote_path).await
-                }
+                KipClient::S3(client) => s3.delete(Some(client), remote_path).await,
                 _ => {
                     bail!("s3 client not provided")
                 }
             },
             Self::Usb(usb) => usb.delete(None, remote_path).await,
             Self::Gdrive(gdrive) => match client {
-                KipClient::Gdrive(client) => {
-                    gdrive.delete(Some(client), remote_path).await
-                }
+                KipClient::Gdrive(client) => gdrive.delete(Some(client), remote_path).await,
                 _ => {
                     bail!("gdrive client not provided")
                 }

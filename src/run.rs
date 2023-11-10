@@ -10,8 +10,8 @@ use crate::compress::{
 };
 use crate::crypto::{decrypt, encrypt_bytes, encrypt_in_place};
 use crate::job::{Job, KipFile, KipStatus};
-use crate::providers::{KipClient, KipUploadOpts};
 use crate::providers::KipProviders;
+use crate::providers::{KipClient, KipUploadOpts};
 use anyhow::{bail, Result};
 use chrono::prelude::*;
 use colored::*;
@@ -493,7 +493,6 @@ impl Run {
         // For each object in the bucket, download it
         let mut counter: u64 = 0;
         for kfc in self.delta.iter() {
-
             let local_path = kfc.file.path.display().to_string();
 
             if kfc.is_single_chunk() {
@@ -529,7 +528,8 @@ impl Run {
                 // Download all chunks
                 let mut chunks_stream = tokio_stream::iter(kfc.chunks.values());
                 while let Some(chunk) = chunks_stream.next().await {
-                    let chunk_bytes = match job.provider.download(&client, &chunk.remote_path).await {
+                    let chunk_bytes = match job.provider.download(&client, &chunk.remote_path).await
+                    {
                         Ok(cb) => cb,
                         Err(e) => {
                             error!("error downloading chunk {}: {e}", &chunk.remote_path);

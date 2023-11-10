@@ -73,7 +73,7 @@ impl KipProvider for KipGdrive {
                     mime_type: Some("application/vnd.google-apps.folder".to_string()),
                     ..Default::default()
                 };
-                let (_, result) = hub 
+                let (_, result) = hub
                     .files()
                     .create(req)
                     .add_scope(Scope::File)
